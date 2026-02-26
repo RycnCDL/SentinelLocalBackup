@@ -305,5 +305,243 @@ function Get-AccessToken {
 
 #endregion
 
+#region Workspace & Subscription Selection
+
+function Select-Subscription {
+    <#
+    .SYNOPSIS
+        Lists available subscriptions and lets the user choose one
+    .DESCRIPTION
+        Queries available Azure subscriptions and stores the selection in the
+        session. Skips the prompt if only one subscription is available.
+    .RETURN
+        $true if a subscription was selected, $false otherwise
+    #>
+    $Session = Get-SentinelSession
+
+    Write-ColorOutput "  Loading subscriptions..." "Cyan"
+
+    $subscriptions = @()
+
+    try {
+        if ($Session.UseAzModule) {
+            Import-Module Az.Accounts -ErrorAction SilentlyContinue
+            $subs = Get-AzSubscription -ErrorAction Stop
+            foreach ($s in $subs) {
+                $subscriptions += [PSCustomObject]@{
+                    Id   = $s.Id
+                    Name = $s.Name
+                    State = $s.State
+                }
+            }
+        } else {
+            $json = az account list --output json 2>$null | ConvertFrom-Json
+            foreach ($s in $json) {
+                $subscriptions += [PSCustomObject]@{
+                    Id    = $s.id
+                    Name  = $s.name
+                    State = $s.state
+                }
+            }
+        }
+    }
+    catch {
+        Write-ColorOutput "  Could not list subscriptions: $_" "Red"
+        return $false
+    }
+
+    $subscriptions = $subscriptions | Where-Object { $_.State -eq "Enabled" } | Sort-Object Name
+
+    if ($subscriptions.Count -eq 0) {
+        Write-ColorOutput "  No enabled subscriptions found." "Red"
+        return $false
+    }
+
+    # Auto-select if only one
+    if ($subscriptions.Count -eq 1) {
+        $Session.SubscriptionId   = $subscriptions[0].Id
+        $Session.SubscriptionName = $subscriptions[0].Name
+        Write-ColorOutput "  Auto-selected subscription: $($subscriptions[0].Name)" "Green"
+        return $true
+    }
+
+    # Show selection list
+    Write-Host ""
+    Write-Host "  ┌────┬────────────────────────────────────────────────────────┐" -ForegroundColor DarkGray
+    Write-Host "  │ ## │ Subscription                                           │" -ForegroundColor DarkGray
+    Write-Host "  ├────┼────────────────────────────────────────────────────────┤" -ForegroundColor DarkGray
+
+    for ($i = 0; $i -lt $subscriptions.Count; $i++) {
+        $num  = ($i + 1).ToString().PadLeft(2)
+        $name = $subscriptions[$i].Name
+        if ($name.Length -gt 54) { $name = $name.Substring(0, 51) + "..." }
+        $namePad = $name.PadRight(54)
+
+        Write-Host "  │ " -ForegroundColor DarkGray -NoNewline
+        Write-Host "$num" -ForegroundColor Yellow -NoNewline
+        Write-Host " │ " -ForegroundColor DarkGray -NoNewline
+        Write-Host "$namePad" -ForegroundColor White -NoNewline
+        Write-Host "│" -ForegroundColor DarkGray
+    }
+    Write-Host "  └────┴────────────────────────────────────────────────────────┘" -ForegroundColor DarkGray
+    Write-Host ""
+
+    do {
+        $choice = Read-Host "  Select subscription (1-$($subscriptions.Count))"
+        $idx    = 0
+        $valid  = [int]::TryParse($choice, [ref]$idx) -and $idx -ge 1 -and $idx -le $subscriptions.Count
+        if (-not $valid) { Write-ColorOutput "  Invalid choice, try again." "Red" }
+    } while (-not $valid)
+
+    $selected = $subscriptions[$idx - 1]
+    $Session.SubscriptionId   = $selected.Id
+    $Session.SubscriptionName = $selected.Name
+
+    # Set active subscription
+    try {
+        if ($Session.UseAzModule) {
+            Set-AzContext -SubscriptionId $selected.Id -ErrorAction SilentlyContinue | Out-Null
+        } else {
+            az account set --subscription $selected.Id 2>$null
+        }
+    } catch {}
+
+    Write-ColorOutput "  Selected: $($selected.Name)" "Green"
+    return $true
+}
+
+function Select-Workspace {
+    <#
+    .SYNOPSIS
+        Lists Log Analytics workspaces in the selected subscription and lets
+        the user choose one
+    .DESCRIPTION
+        Queries the Azure REST API for all Log Analytics workspaces in the
+        current subscription. Stores the selection (WorkspaceId, WorkspaceName,
+        ResourceGroup) in the session.
+    .RETURN
+        $true if a workspace was selected, $false otherwise
+    #>
+    $Session = Get-SentinelSession
+    $Config  = Get-SentinelConfig
+
+    if (-not $Session.SubscriptionId) {
+        Write-ColorOutput "  No subscription selected. Run Select-Subscription first." "Red"
+        return $false
+    }
+
+    Write-ColorOutput "  Loading Log Analytics workspaces..." "Cyan"
+
+    $workspaces = @()
+
+    try {
+        $uri = "$($Config.ManagementApiUrl)/subscriptions/$($Session.SubscriptionId)" +
+               "/providers/Microsoft.OperationalInsights/workspaces?api-version=2022-10-01"
+
+        # Get token for the API call
+        $token = Get-AccessToken
+        if (-not $token) { return $false }
+
+        $headers  = @{ "Authorization" = "Bearer $token" }
+        $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method GET -ErrorAction Stop
+
+        foreach ($ws in $response.value) {
+            $rg = (($ws.id -split "/resourceGroups/")[1] -split "/")[0]
+            $workspaces += [PSCustomObject]@{
+                Name          = $ws.name
+                ResourceGroup = $rg
+                WorkspaceId   = $ws.properties.customerId
+                Location      = $ws.location
+                Sku           = $ws.properties.sku.name
+            }
+        }
+    }
+    catch {
+        Write-ColorOutput "  Could not list workspaces via REST: $_" "Yellow"
+        Write-ColorOutput "  Trying Az Module fallback..." "Gray"
+
+        try {
+            Import-Module Az.OperationalInsights -ErrorAction SilentlyContinue
+            $azWs = Get-AzOperationalInsightsWorkspace -ErrorAction Stop
+            foreach ($ws in $azWs) {
+                $workspaces += [PSCustomObject]@{
+                    Name          = $ws.Name
+                    ResourceGroup = $ws.ResourceGroupName
+                    WorkspaceId   = $ws.CustomerId
+                    Location      = $ws.Location
+                    Sku           = $ws.Sku
+                }
+            }
+        }
+        catch {
+            Write-ColorOutput "  Could not list workspaces: $_" "Red"
+            return $false
+        }
+    }
+
+    $workspaces = $workspaces | Sort-Object Name
+
+    if ($workspaces.Count -eq 0) {
+        Write-ColorOutput "  No Log Analytics workspaces found in subscription '$($Session.SubscriptionName)'." "Red"
+        return $false
+    }
+
+    # Auto-select if only one
+    if ($workspaces.Count -eq 1) {
+        $ws = $workspaces[0]
+        $Session.WorkspaceName  = $ws.Name
+        $Session.WorkspaceId    = $ws.WorkspaceId
+        $Session.ResourceGroup  = $ws.ResourceGroup
+        $Session.AuthToken      = Get-AccessToken
+        Write-ColorOutput "  Auto-selected workspace: $($ws.Name)" "Green"
+        return $true
+    }
+
+    # Show selection list
+    Write-Host ""
+    Write-Host "  ┌────┬──────────────────────────────┬──────────────────────────┐" -ForegroundColor DarkGray
+    Write-Host "  │ ## │ Workspace                     │ Resource Group           │" -ForegroundColor DarkGray
+    Write-Host "  ├────┼──────────────────────────────┼──────────────────────────┤" -ForegroundColor DarkGray
+
+    for ($i = 0; $i -lt $workspaces.Count; $i++) {
+        $num  = ($i + 1).ToString().PadLeft(2)
+        $name = $workspaces[$i].Name
+        if ($name.Length -gt 28) { $name = $name.Substring(0, 25) + "..." }
+        $namePad = $name.PadRight(28)
+
+        $rg = $workspaces[$i].ResourceGroup
+        if ($rg.Length -gt 24) { $rg = $rg.Substring(0, 21) + "..." }
+        $rgPad = $rg.PadRight(24)
+
+        Write-Host "  │ " -ForegroundColor DarkGray -NoNewline
+        Write-Host "$num" -ForegroundColor Yellow -NoNewline
+        Write-Host " │ " -ForegroundColor DarkGray -NoNewline
+        Write-Host "$namePad" -ForegroundColor Cyan -NoNewline
+        Write-Host "│ " -ForegroundColor DarkGray -NoNewline
+        Write-Host "$rgPad" -ForegroundColor White -NoNewline
+        Write-Host "│" -ForegroundColor DarkGray
+    }
+    Write-Host "  └────┴──────────────────────────────┴──────────────────────────┘" -ForegroundColor DarkGray
+    Write-Host ""
+
+    do {
+        $choice = Read-Host "  Select workspace (1-$($workspaces.Count))"
+        $idx    = 0
+        $valid  = [int]::TryParse($choice, [ref]$idx) -and $idx -ge 1 -and $idx -le $workspaces.Count
+        if (-not $valid) { Write-ColorOutput "  Invalid choice, try again." "Red" }
+    } while (-not $valid)
+
+    $ws = $workspaces[$idx - 1]
+    $Session.WorkspaceName = $ws.Name
+    $Session.WorkspaceId   = $ws.WorkspaceId
+    $Session.ResourceGroup = $ws.ResourceGroup
+    $Session.AuthToken     = Get-AccessToken
+
+    Write-ColorOutput "  Selected: $($ws.Name) (RG: $($ws.ResourceGroup))" "Green"
+    return $true
+}
+
+#endregion
+
 #region Export Module Members
 

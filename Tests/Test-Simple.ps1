@@ -16,6 +16,7 @@ $files = @(
     "Helpers/UIHelpers.ps1"
     "Operations/TableDiscovery.ps1"
     "Operations/Export.ps1"
+    "Public/Start-SentinelBackup.ps1"
 )
 
 foreach ($file in $files) {
@@ -65,6 +66,13 @@ try {
     Write-Host "  [FAIL] Export.ps1: $($_.Exception.Message)" -ForegroundColor Red
 }
 
+try {
+    . "$ModuleRoot/Public/Start-SentinelBackup.ps1"
+    Write-Host "  [OK] Start-SentinelBackup.ps1 loaded" -ForegroundColor Green
+} catch {
+    Write-Host "  [FAIL] Start-SentinelBackup.ps1: $($_.Exception.Message)" -ForegroundColor Red
+}
+
 # Test 3: Functions work
 Write-Host "`nTest 3: Core Functions" -ForegroundColor Yellow
 
@@ -97,8 +105,12 @@ try {
 
 # Verify all operation functions exist
 try {
-    $funcs = @("Get-WorkspaceTables", "Find-Tables", "Select-Tables",
-               "Export-TableToCSV", "Get-BackupStatus", "Test-BackupIntegrity")
+    $funcs = @(
+        "Get-WorkspaceTables", "Find-Tables", "Select-Tables",
+        "Export-TableToCSV", "Get-BackupStatus", "Test-BackupIntegrity",
+        "Select-Subscription", "Select-Workspace",
+        "Start-SentinelBackup"
+    )
     foreach ($fn in $funcs) {
         if (Get-Command $fn -ErrorAction SilentlyContinue) {
             Write-Host "  [OK] $fn is defined" -ForegroundColor Green
