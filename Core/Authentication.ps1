@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Authentication Module for Sentinel Manager
 .DESCRIPTION

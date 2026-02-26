@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Sentinel Local Backup Tool - Main Module
 .DESCRIPTION

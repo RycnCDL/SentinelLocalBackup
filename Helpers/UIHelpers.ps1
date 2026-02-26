@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     UI Helper Functions for Sentinel Manager
 .DESCRIPTION
@@ -97,12 +97,12 @@ function Write-FeatureBox {
     Write-Host "  ├────────────────────────┼────────────────────────────────────┤" -ForegroundColor DarkGray
 
     $modules = @(
-        @{Name="📊 Tables"; Status="✓ CRUD, Plan, Retention"},
-        @{Name="📡 DCR/DCE"; Status="✓ Management & Templates"},
-        @{Name="🔍 Analytics"; Status="✓ Rules, Creation, Templates"},
-        @{Name="📈 Workbooks"; Status="✓ Export, Import, Delete"},
-        @{Name="🚨 Incidents"; Status="✓ Full Management & Bulk"},
-        @{Name="💾 Backup"; Status="✓ Export All Configs"}
+        @{Name="[*] Tables"; Status="Available: CRUD, Plan, Retention"},
+        @{Name="[*] DCR/DCE"; Status="Available: Management & Templates"},
+        @{Name="[*] Analytics"; Status="Available: Rules, Creation, Templates"},
+        @{Name="[*] Workbooks"; Status="Available: Export, Import, Delete"},
+        @{Name="[*] Incidents"; Status="Available: Full Management & Bulk"},
+        @{Name="[*] Backup"; Status="Available: Export All Configs"}
     )
 
     foreach ($module in $modules) {
@@ -137,7 +137,7 @@ function Write-MenuHeader {
         [string]$Title,
 
         [Parameter(Mandatory=$false)]
-        [string]$Icon = "📋",
+        [string]$Icon = "[*]",
 
         [Parameter(Mandatory=$false)]
         [bool]$ShowContext = $true
@@ -206,7 +206,7 @@ function Write-MainMenuHeader {
     Write-Host ""
     Write-Host "  ╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "  ║  " -ForegroundColor Cyan -NoNewline
-    Write-Host "🏠 Main Menu" -ForegroundColor White -NoNewline
+    Write-Host "[Home] Main Menu" -ForegroundColor White -NoNewline
     Write-Host " " -NoNewline
     Write-Host "- Dashboard" -ForegroundColor DarkCyan -NoNewline
     Write-Host "                                  ║" -ForegroundColor Cyan
@@ -299,7 +299,7 @@ function Write-Header {
     )
 
     # Redirect to new function
-    Write-MenuHeader -Title $Title -Icon "📋" -ShowContext $true
+    Write-MenuHeader -Title $Title -Icon "[*]" -ShowContext $true
 }
 
 #endregion

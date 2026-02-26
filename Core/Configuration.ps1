@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Configuration and Session Management for Sentinel Manager
 .DESCRIPTION
