@@ -1,0 +1,41 @@
+# PowerShell
+*.ps1xml
+*.psd1~
+*.psm1~
+
+# Build artifacts
+publish/
+*.nupkg
+
+# Test results
+TestResults/
+*.trx
+
+# Logs
+*.log
+Logs/
+
+# Output directories
+Output/
+Backups/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Credentials (NEVER commit)
+*.credentials
+*.secret
+config.local.json
+.env
+
+# Azure
+*.publishsettings

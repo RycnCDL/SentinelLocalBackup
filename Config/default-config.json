@@ -1,0 +1,12 @@
+{
+  "DefaultOutputPath": "C:\\SentinelBackups",
+  "BatchSize": 5000,
+  "MaxRetries": 3,
+  "CompressAfterExport": true,
+  "DeleteUncompressed": false,
+  "ValidateIntegrity": true,
+  "ParallelTableExports": 1,
+  "LogLevel": "Information",
+  "TimeRangeDefault": "30d",
+  "Comment": "This is the default configuration. Override with -ConfigFile parameter or individual switches."
+}
