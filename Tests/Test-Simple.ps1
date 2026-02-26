@@ -15,6 +15,7 @@ $files = @(
     "Core/Configuration.ps1"
     "Helpers/UIHelpers.ps1"
     "Operations/TableDiscovery.ps1"
+    "Operations/Export.ps1"
 )
 
 foreach ($file in $files) {
@@ -57,6 +58,13 @@ try {
     Write-Host "  [FAIL] TableDiscovery.ps1: $($_.Exception.Message)" -ForegroundColor Red
 }
 
+try {
+    . "$ModuleRoot/Operations/Export.ps1"
+    Write-Host "  [OK] Export.ps1 loaded" -ForegroundColor Green
+} catch {
+    Write-Host "  [FAIL] Export.ps1: $($_.Exception.Message)" -ForegroundColor Red
+}
+
 # Test 3: Functions work
 Write-Host "`nTest 3: Core Functions" -ForegroundColor Yellow
 
@@ -87,9 +95,10 @@ try {
     Write-Host "  [FAIL] Get-SchemaTemplates: $($_.Exception.Message)" -ForegroundColor Red
 }
 
-# Verify TableDiscovery functions exist
+# Verify all operation functions exist
 try {
-    $funcs = @("Get-WorkspaceTables", "Find-Tables", "Select-Tables")
+    $funcs = @("Get-WorkspaceTables", "Find-Tables", "Select-Tables",
+               "Export-TableToCSV", "Get-BackupStatus", "Test-BackupIntegrity")
     foreach ($fn in $funcs) {
         if (Get-Command $fn -ErrorAction SilentlyContinue) {
             Write-Host "  [OK] $fn is defined" -ForegroundColor Green

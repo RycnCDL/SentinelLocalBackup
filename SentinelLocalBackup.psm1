@@ -37,9 +37,9 @@ if (Test-Path "$ModuleRoot/Operations/TableDiscovery.ps1") {
     . "$ModuleRoot/Operations/TableDiscovery.ps1"
 }
 
-Write-Verbose "  Loading DataExport..."
-if (Test-Path "$ModuleRoot/Operations/DataExport.ps1") {
-    . "$ModuleRoot/Operations/DataExport.ps1"
+Write-Verbose "  Loading Export..."
+if (Test-Path "$ModuleRoot/Operations/Export.ps1") {
+    . "$ModuleRoot/Operations/Export.ps1"
 }
 
 Write-Verbose "  Loading Compression..."
@@ -86,10 +86,17 @@ Write-Verbose "Sentinel Local Backup module loaded successfully!"
 
 # Export public functions (will be defined in Public/*.ps1 files)
 Export-ModuleMember -Function @(
+    # Core entry points
     'Start-SentinelBackup'
     'Resume-SentinelBackup'
+    # Export operations
+    'Export-TableToCSV'
     'Get-BackupStatus'
     'Test-BackupIntegrity'
-    'Connect-ToAzure'  # Export for testing/manual use
-    'Get-WorkspaceTables'  # Export for advanced users
+    # Table discovery
+    'Get-WorkspaceTables'
+    'Find-Tables'
+    'Select-Tables'
+    # Authentication (manual use)
+    'Connect-ToAzure'
 )
