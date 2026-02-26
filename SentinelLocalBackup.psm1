@@ -86,7 +86,7 @@ Write-Verbose "Sentinel Local Backup module loaded successfully!"
 
 # Export public functions (will be defined in Public/*.ps1 files)
 Export-ModuleMember -Function @(
-    # Core entry points
+    # Main entry points
     'Start-SentinelBackup'
     'Resume-SentinelBackup'
     # Export operations
@@ -97,6 +97,8 @@ Export-ModuleMember -Function @(
     'Get-WorkspaceTables'
     'Find-Tables'
     'Select-Tables'
-    # Authentication (manual use)
+    # Authentication & workspace selection
     'Connect-ToAzure'
+    'Select-Subscription'
+    'Select-Workspace'
 )

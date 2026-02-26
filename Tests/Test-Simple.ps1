@@ -17,6 +17,7 @@ $files = @(
     "Operations/TableDiscovery.ps1"
     "Operations/Export.ps1"
     "Public/Start-SentinelBackup.ps1"
+    "Public/Resume-SentinelBackup.ps1"
 )
 
 foreach ($file in $files) {
@@ -73,6 +74,13 @@ try {
     Write-Host "  [FAIL] Start-SentinelBackup.ps1: $($_.Exception.Message)" -ForegroundColor Red
 }
 
+try {
+    . "$ModuleRoot/Public/Resume-SentinelBackup.ps1"
+    Write-Host "  [OK] Resume-SentinelBackup.ps1 loaded" -ForegroundColor Green
+} catch {
+    Write-Host "  [FAIL] Resume-SentinelBackup.ps1: $($_.Exception.Message)" -ForegroundColor Red
+}
+
 # Test 3: Functions work
 Write-Host "`nTest 3: Core Functions" -ForegroundColor Yellow
 
@@ -109,7 +117,8 @@ try {
         "Get-WorkspaceTables", "Find-Tables", "Select-Tables",
         "Export-TableToCSV", "Get-BackupStatus", "Test-BackupIntegrity",
         "Select-Subscription", "Select-Workspace",
-        "Start-SentinelBackup"
+        "Start-SentinelBackup", "Resume-SentinelBackup",
+        "Save-Checkpoint"
     )
     foreach ($fn in $funcs) {
         if (Get-Command $fn -ErrorAction SilentlyContinue) {

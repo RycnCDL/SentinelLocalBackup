@@ -110,16 +110,15 @@ function Export-TableToCSV {
         German compliance tooling). Large tables are exported in batches using
         time-window pagination.
 
-        A companion metadata.json file is generated alongside every CSV with:
-          - Table name, row count, column schema
-          - Export timestamp, time range covered
-          - SHA256 hash of the CSV for integrity verification
+        After each batch a checkpoint.json is written so an interrupted export
+        can be resumed with Resume-SentinelBackup. On successful completion the
+        checkpoint is removed and a final metadata.json with a SHA256 hash is
+        written for integrity verification.
 
     .PARAMETER TableName
         Name of the Log Analytics table to export (e.g. "SecurityEvent")
     .PARAMETER OutputPath
-        Local folder where the CSV will be saved.
-        Default: C:\SentinelBackups
+        Local folder where the CSV will be saved. Default: C:\SentinelBackups
     .PARAMETER StartTime
         Start of the time range to export. Default: 30 days ago.
     .PARAMETER EndTime
@@ -131,6 +130,9 @@ function Export-TableToCSV {
         Safety limit on total rows exported. 0 = no limit. Default: 500000.
     .PARAMETER SkipConfirm
         Skip the row-count confirmation prompt before exporting.
+    .PARAMETER ResumeCheckpointPath
+        Path to a checkpoint.json from an interrupted run. When provided the
+        export appends to the existing CSV starting from where it stopped.
     .EXAMPLE
         Export-TableToCSV -TableName "SecurityEvent" -OutputPath "D:\Backups"
     .EXAMPLE
@@ -157,14 +159,37 @@ function Export-TableToCSV {
         [int]$MaxRows = 500000,
 
         [Parameter(Mandatory=$false)]
-        [switch]$SkipConfirm
+        [switch]$SkipConfirm,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ResumeCheckpointPath = ""
     )
 
     $Session = Get-SentinelSession
-    $runId   = Get-Date -Format "yyyyMMdd_HHmmss"
-    $outDir  = New-OutputDirectory -BasePath $OutputPath -TableName $TableName -RunId $runId
-    $csvPath = Join-Path $outDir "$TableName`_$runId.csv"
-    $metaPath= Join-Path $outDir "metadata.json"
+
+    # ── Resume vs. fresh start ──────────────────────────────────────────────
+    $isResuming = ($ResumeCheckpointPath -ne "") -and (Test-Path $ResumeCheckpointPath)
+
+    if ($isResuming) {
+        $cp        = Get-Content $ResumeCheckpointPath -Raw | ConvertFrom-Json
+        $TableName = $cp.tableName
+        $StartTime = [datetime]::Parse($cp.startTime)
+        $EndTime   = [datetime]::Parse($cp.endTime)
+        $BatchDays = $cp.batchDays
+        $MaxRows   = $cp.maxRows
+        $runId     = $cp.runId
+        $outDir    = $cp.outputDir
+        $csvPath   = $cp.csvPath
+        $metaPath  = Join-Path $outDir "metadata.json"
+        Write-ColorOutput "  [RESUME] Continuing from: $($cp.lastCompletedBatchEnd)" "Yellow"
+    } else {
+        $runId    = Get-Date -Format "yyyyMMdd_HHmmss"
+        $outDir   = New-OutputDirectory -BasePath $OutputPath -TableName $TableName -RunId $runId
+        $csvPath  = Join-Path $outDir "$TableName`_$runId.csv"
+        $metaPath = Join-Path $outDir "metadata.json"
+    }
+
+    $checkpointPath = Join-Path $outDir "checkpoint.json"
 
     Write-Host ""
     Write-Host "  ╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -174,44 +199,44 @@ function Export-TableToCSV {
     Write-ColorOutput "  Workspace : $($Session.WorkspaceName)" "Gray"
     Write-ColorOutput "  Time range: $($StartTime.ToString('yyyy-MM-dd HH:mm')) UTC -> $($EndTime.ToString('yyyy-MM-dd HH:mm')) UTC" "Gray"
     Write-ColorOutput "  Output    : $csvPath" "Gray"
+    if ($isResuming) {
+        Write-ColorOutput "  Resuming  : $($cp.totalRowsWritten.ToString('N0')) rows already written" "Yellow"
+    }
     Write-Host ""
 
-    # --- Step 1: Row count estimate ---
-    Write-ColorOutput "  [1/4] Estimating row count..." "Yellow"
+    # --- Step 1: Row count estimate (skip on resume) ---
+    if (-not $isResuming) {
+        Write-ColorOutput "  [1/4] Estimating row count..." "Yellow"
 
-    $isoStart = $StartTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $isoEnd   = $EndTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $isoStart = $StartTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $isoEnd   = $EndTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $countKql = "$TableName | where TimeGenerated between (datetime('$isoStart') .. datetime('$isoEnd')) | count"
 
-    $countKql = "$TableName | where TimeGenerated between (datetime('$isoStart') .. datetime('$isoEnd')) | count"
+        try {
+            $countResp     = Invoke-LogAnalyticsQuery -Query $countKql -Timespan "P$(([int]($EndTime - $StartTime).TotalDays + 1))D"
+            $estimatedRows = [int]($countResp.tables[0].rows[0][0])
+            Write-ColorOutput "  Estimated rows: $($estimatedRows.ToString('N0'))" "Cyan"
+        }
+        catch {
+            Write-ColorOutput "  Could not estimate row count: $_" "Yellow"
+            $estimatedRows = -1
+        }
 
-    try {
-        $countResponse = Invoke-LogAnalyticsQuery -Query $countKql -Timespan "P$(([int]($EndTime - $StartTime).TotalDays + 1))D"
-        $estimatedRows = [int]($countResponse.tables[0].rows[0][0])
-        Write-ColorOutput "  Estimated rows: $($estimatedRows.ToString('N0'))" "Cyan"
-    }
-    catch {
-        Write-ColorOutput "  Could not estimate row count: $_" "Yellow"
-        $estimatedRows = -1
-    }
-
-    if ($MaxRows -gt 0 -and $estimatedRows -gt $MaxRows) {
-        Write-ColorOutput "  WARNING: Table has $($estimatedRows.ToString('N0')) rows, limit is $($MaxRows.ToString('N0'))." "Red"
-        Write-ColorOutput "           Use -MaxRows 0 to remove limit or -StartTime to narrow range." "Red"
-        Write-Host ""
-        if (-not $SkipConfirm) {
-            $continue = Get-YesNoChoice "Export first $($MaxRows.ToString('N0')) rows anyway?" "N"
-            if (-not $continue) {
-                Write-ColorOutput "  Export cancelled." "Yellow"
-                return $null
+        if ($MaxRows -gt 0 -and $estimatedRows -gt $MaxRows) {
+            Write-ColorOutput "  WARNING: Table has $($estimatedRows.ToString('N0')) rows, limit is $($MaxRows.ToString('N0'))." "Red"
+            Write-ColorOutput "           Use -MaxRows 0 to remove limit or -StartTime to narrow range." "Red"
+            Write-Host ""
+            if (-not $SkipConfirm) {
+                $go = Get-YesNoChoice "Export first $($MaxRows.ToString('N0')) rows anyway?" "N"
+                if (-not $go) { Write-ColorOutput "  Export cancelled." "Yellow"; return $null }
             }
         }
-    }
-    elseif ($estimatedRows -gt 0 -and -not $SkipConfirm) {
-        $proceed = Get-YesNoChoice "Export $($estimatedRows.ToString('N0')) rows from '$TableName'?" "Y"
-        if (-not $proceed) {
-            Write-ColorOutput "  Export cancelled." "Yellow"
-            return $null
+        elseif ($estimatedRows -gt 0 -and -not $SkipConfirm) {
+            $go = Get-YesNoChoice "Export $($estimatedRows.ToString('N0')) rows from '$TableName'?" "Y"
+            if (-not $go) { Write-ColorOutput "  Export cancelled." "Yellow"; return $null }
         }
+    } else {
+        Write-ColorOutput "  [1/4] Skipping row count estimate (resuming)." "Gray"
     }
 
     # --- Step 2: Schema discovery ---
@@ -219,9 +244,9 @@ function Export-TableToCSV {
 
     $schemaKql = "$TableName | getschema"
     try {
-        $schemaResponse = Invoke-LogAnalyticsQuery -Query $schemaKql -Timespan "P1D"
-        $schemaRows     = ConvertTo-FlatRows -ApiResponse $schemaResponse
-        $columns        = $schemaRows | Select-Object ColumnName, DataType, ColumnType
+        $schemaResp = Invoke-LogAnalyticsQuery -Query $schemaKql -Timespan "P1D"
+        $schemaRows = ConvertTo-FlatRows -ApiResponse $schemaResp
+        $columns    = $schemaRows | Select-Object ColumnName, DataType, ColumnType
         Write-ColorOutput "  Columns: $($columns.Count)" "Cyan"
     }
     catch {
@@ -232,13 +257,23 @@ function Export-TableToCSV {
     # --- Step 3: Paginated export ---
     Write-ColorOutput "  [3/4] Exporting data in $BatchDays-day batches..." "Yellow"
 
-    $utf8Bom      = New-Object System.Text.UTF8Encoding $true
-    $streamWriter = New-Object System.IO.StreamWriter($csvPath, $false, $utf8Bom)
+    if ($isResuming) {
+        # Append to existing file, no BOM (already written)
+        $appendEnc    = New-Object System.Text.UTF8Encoding $false
+        $streamWriter = New-Object System.IO.StreamWriter($csvPath, $true, $appendEnc)
+        $totalRows    = $cp.totalRowsWritten
+        $headerWritten= $true
+        $batchStart   = [datetime]::Parse($cp.lastCompletedBatchEnd)
+    } else {
+        # New file with UTF-8 BOM
+        $utf8Bom      = New-Object System.Text.UTF8Encoding $true
+        $streamWriter = New-Object System.IO.StreamWriter($csvPath, $false, $utf8Bom)
+        $totalRows    = 0
+        $headerWritten= $false
+        $batchStart   = $StartTime
+    }
 
-    $totalRows    = 0
-    $batchNum     = 0
-    $headerWritten= $false
-    $batchStart   = $StartTime
+    $batchNum = 0
 
     try {
         while ($batchStart -lt $EndTime) {
@@ -250,10 +285,10 @@ function Export-TableToCSV {
             $beStr = $batchEnd.ToString("yyyy-MM-dd")
             Write-ColorOutput "    Batch $($batchNum): $bsStr -> $beStr" "Gray"
 
-            $isoBS = $batchStart.ToString("yyyy-MM-ddTHH:mm:ssZ")
-            $isoBE = $batchEnd.ToString("yyyy-MM-ddTHH:mm:ssZ")
-
+            $isoBS    = $batchStart.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            $isoBE    = $batchEnd.ToString("yyyy-MM-ddTHH:mm:ssZ")
             $batchKql = "$TableName | where TimeGenerated between (datetime('$isoBS') .. datetime('$isoBE'))"
+
             if ($MaxRows -gt 0) {
                 $remaining = $MaxRows - $totalRows
                 if ($remaining -le 0) { break }
@@ -261,15 +296,20 @@ function Export-TableToCSV {
             }
 
             try {
-                $batchResponse = Invoke-LogAnalyticsQuery -Query $batchKql -Timespan "P$($BatchDays + 1)D"
-                $batchRows     = ConvertTo-FlatRows -ApiResponse $batchResponse
+                $batchResp = Invoke-LogAnalyticsQuery -Query $batchKql -Timespan "P$($BatchDays + 1)D"
+                $batchRows = ConvertTo-FlatRows -ApiResponse $batchResp
 
                 if ($batchRows.Count -eq 0) {
                     $batchStart = $batchEnd
+                    # Still checkpoint the progress even for empty batches
+                    Save-Checkpoint -Path $checkpointPath -TableName $TableName -RunId $runId `
+                        -CsvPath $csvPath -OutputDir $outDir -StartTime $StartTime -EndTime $EndTime `
+                        -LastBatchEnd $batchEnd -TotalRows $totalRows -BatchDays $BatchDays `
+                        -MaxRows $MaxRows -Session $Session
                     continue
                 }
 
-                # Write CSV header once
+                # Write CSV header once (fresh exports only)
                 if (-not $headerWritten) {
                     $header = ($batchRows[0].PSObject.Properties.Name | ForEach-Object {
                         if ($_ -match '[,"\r\n]') { "`"$_`"" } else { $_ }
@@ -288,11 +328,19 @@ function Export-TableToCSV {
                     $totalRows++
                 }
 
+                $streamWriter.Flush()
                 Write-ColorOutput "    -> $($batchRows.Count) rows (total: $($totalRows.ToString('N0')))" "Green"
+
+                # Save checkpoint after every successful batch
+                Save-Checkpoint -Path $checkpointPath -TableName $TableName -RunId $runId `
+                    -CsvPath $csvPath -OutputDir $outDir -StartTime $StartTime -EndTime $EndTime `
+                    -LastBatchEnd $batchEnd -TotalRows $totalRows -BatchDays $BatchDays `
+                    -MaxRows $MaxRows -Session $Session
             }
             catch {
-                Write-ColorOutput "    [WARN] Batch $batchNum failed: $_" "Yellow"
-                Write-ColorOutput "           Skipping this batch and continuing..." "Gray"
+                Write-ColorOutput "    [WARN] Batch $($batchNum) failed: $_" "Yellow"
+                Write-ColorOutput "           A checkpoint was saved - use Resume-SentinelBackup to continue." "Gray"
+                # Don't advance batchStart - checkpoint already holds last good position
             }
 
             $batchStart = $batchEnd
@@ -309,35 +357,39 @@ function Export-TableToCSV {
     # --- Step 4: Metadata + integrity ---
     Write-ColorOutput "  [4/4] Generating metadata and integrity hash..." "Yellow"
 
-    $sha256   = [System.Security.Cryptography.SHA256]::Create()
-    $fileBytes= [System.IO.File]::ReadAllBytes($csvPath)
-    $hashBytes= $sha256.ComputeHash($fileBytes)
+    $sha256    = [System.Security.Cryptography.SHA256]::Create()
+    $fileBytes = [System.IO.File]::ReadAllBytes($csvPath)
+    $hashBytes = $sha256.ComputeHash($fileBytes)
     $sha256.Dispose()
-    $csvHash  = [BitConverter]::ToString($hashBytes) -replace "-",""
+    $csvHash   = [BitConverter]::ToString($hashBytes) -replace "-",""
 
     $fileSizeMB = [math]::Round((Get-Item $csvPath).Length / 1MB, 3)
 
     $metadata = [ordered]@{
-        exportVersion   = "1.0"
-        tableName       = $TableName
-        workspaceName   = $Session.WorkspaceName
-        workspaceId     = $Session.WorkspaceId
-        subscriptionId  = $Session.SubscriptionId
-        exportedAt      = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-        timeRangeStart  = $StartTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        timeRangeEnd    = $EndTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        totalRows       = $totalRows
-        batchDays       = $BatchDays
-        csvFile         = [System.IO.Path]::GetFileName($csvPath)
-        csvSizeMB       = $fileSizeMB
-        csvEncoding     = "UTF-8 BOM"
-        csvSHA256       = $csvHash
-        schema          = $columns
-        exportedBy      = $env:USERNAME
-        hostname        = $env:COMPUTERNAME
+        exportVersion  = "1.0"
+        tableName      = $TableName
+        workspaceName  = $Session.WorkspaceName
+        workspaceId    = $Session.WorkspaceId
+        subscriptionId = $Session.SubscriptionId
+        exportedAt     = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        timeRangeStart = $StartTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        timeRangeEnd   = $EndTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        totalRows      = $totalRows
+        batchDays      = $BatchDays
+        wasResumed     = $isResuming
+        csvFile        = [System.IO.Path]::GetFileName($csvPath)
+        csvSizeMB      = $fileSizeMB
+        csvEncoding    = "UTF-8 BOM"
+        csvSHA256      = $csvHash
+        schema         = $columns
+        exportedBy     = $env:USERNAME
+        hostname       = $env:COMPUTERNAME
     }
 
     $metadata | ConvertTo-Json -Depth 5 | Out-File -FilePath $metaPath -Encoding UTF8
+
+    # Remove checkpoint - export is complete
+    if (Test-Path $checkpointPath) { Remove-Item $checkpointPath -Force }
 
     # --- Summary ---
     Write-Host ""
@@ -380,6 +432,47 @@ function Export-TableToCSV {
         SHA256     = $csvHash
         Success    = $true
     }
+}
+
+function Save-Checkpoint {
+    <#
+    .SYNOPSIS
+        Writes a checkpoint.json to track batch progress for resume support
+    #>
+    param(
+        [string]$Path,
+        [string]$TableName,
+        [string]$RunId,
+        [string]$CsvPath,
+        [string]$OutputDir,
+        [datetime]$StartTime,
+        [datetime]$EndTime,
+        [datetime]$LastBatchEnd,
+        [int]$TotalRows,
+        [int]$BatchDays,
+        [int]$MaxRows,
+        $Session
+    )
+
+    $cp = [ordered]@{
+        version               = "1.0"
+        tableName             = $TableName
+        runId                 = $RunId
+        csvPath               = $CsvPath
+        outputDir             = $OutputDir
+        startTime             = $StartTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        endTime               = $EndTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        lastCompletedBatchEnd = $LastBatchEnd.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        totalRowsWritten      = $TotalRows
+        batchDays             = $BatchDays
+        maxRows               = $MaxRows
+        savedAt               = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        workspaceName         = $Session.WorkspaceName
+        workspaceId           = $Session.WorkspaceId
+        subscriptionId        = $Session.SubscriptionId
+    }
+
+    $cp | ConvertTo-Json | Out-File $Path -Encoding UTF8 -Force
 }
 
 function Get-BackupStatus {
