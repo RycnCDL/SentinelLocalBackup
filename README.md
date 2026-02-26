@@ -6,282 +6,380 @@
 
 > **PowerShell module for exporting Microsoft Sentinel / Log Analytics tables to local CSV files with resume capability and integrity validation.**
 
-## 🎯 Purpose
+## Purpose
 
-Many organizations, especially in Germany, require local log backups for:
-- **Compliance**: Data residency and audit requirements
-- **Trust**: Local control over sensitive security logs
-- **Business Continuity**: Offline access to historical data
-- **Cost Optimization**: Long-term archival outside of Azure
+Many organizations — especially in Germany — require local log backups for:
 
-This tool addresses these needs by providing reliable, automated export of Log Analytics tables to CSV format.
+- **Compliance** — Data residency and BSI/DSGVO audit requirements
+- **Trust** — Local control over sensitive security logs
+- **Business Continuity** — Offline access to historical data
+- **Cost Optimization** — Long-term archival outside Azure retention pricing
 
-## ✨ Features
-
-- 📊 **Export all or selected tables** from Log Analytics workspace
-- 📄 **CSV format** with UTF-8 BOM encoding (Excel-friendly)
-- 🔄 **Pagination** for large tables (handles millions of rows)
-- 📦 **ZIP compression** with metadata JSON
-- ⏸️ **Resume capability** for interrupted exports
-- 🤖 **Automated execution** via scheduled tasks or cron
-- ✅ **Data integrity validation** (row counts, checksums)
-- 🔐 **Dual authentication** (Interactive or Service Principal)
-
-## 🚀 Quick Start
-
-### Installation
-
-```powershell
-# Install from PowerShell Gallery (coming soon)
-Install-Module -Name SentinelLocalBackup -Scope CurrentUser
-
-# Or clone from GitHub
-git clone https://github.com/RycnCDL/SentinelLocalBackup.git
-cd SentinelLocalBackup
-Import-Module ./SentinelLocalBackup.psd1
-```
-
-### Prerequisites
-
-```powershell
-# Required Azure PowerShell modules
-Install-Module -Name Az.Accounts -Force
-Install-Module -Name Az.OperationalInsights -Force
-```
-
-### Basic Usage
-
-```powershell
-# Interactive: Export all tables from last 30 days
-Connect-AzAccount
-Start-SentinelBackup -WorkspaceId "abc-123-def" -AllTables -TimeRange "30d"
-
-# Specific tables only
-Start-SentinelBackup -WorkspaceId "abc-123-def" -Tables "SecurityEvent", "Syslog"
-
-# With compression and cleanup
-Start-SentinelBackup -WorkspaceId "abc-123-def" -AllTables -Compress -DeleteUncompressed
-```
-
-## 📖 Documentation
-
-### Main Commands
-
-| Command | Description |
-|---------|-------------|
-| `Start-SentinelBackup` | Start a new backup session |
-| `Resume-SentinelBackup` | Resume interrupted backup |
-| `Get-BackupStatus` | Check backup session status |
-| `Test-BackupIntegrity` | Validate exported data |
-
-### Parameters
-
-```powershell
-Start-SentinelBackup
-    -WorkspaceId <string>              # Required: Log Analytics workspace ID
-    [-SubscriptionId <string>]          # Auto-detect if omitted
-    [-ResourceGroup <string>]           # Auto-detect if omitted
-    [-Tables <string[]>]                # Specific tables or patterns
-    [-AllTables]                        # Export all tables
-    [-OutputPath <string>]              # Default: C:\SentinelBackups
-    [-TimeRange <string>]               # "30d", "7d", "90d"
-    [-StartTime <datetime>]             # Explicit start time
-    [-EndTime <datetime>]               # Explicit end time
-    [-Compress]                         # Create ZIP archives
-    [-DeleteUncompressed]               # Clean up CSV after ZIP
-    [-BatchSize <int>]                  # Default: 5000 rows
-    [-Parallel <int>]                   # Concurrent tables (PS7+)
-    [-NoValidation]                     # Skip integrity checks
-    [-Force]                            # Overwrite existing backups
-    [-Credential <PSCredential>]        # Service Principal auth
-    [-WhatIf]                           # Dry-run mode
-    [-Verbose]                          # Detailed logging
-```
-
-### Output Structure
-
-```
-C:\SentinelBackups\
-└── 2026-02-26_10-00-00_WorkspaceID\    # Timestamped session
-    ├── session.json                     # Resume state
-    ├── manifest.json                    # Backup metadata
-    ├── SecurityEvent\
-    │   ├── SecurityEvent.csv            # Raw data
-    │   ├── SecurityEvent.metadata.json  # Schema + checksum
-    │   └── SecurityEvent.zip            # Compressed
-    ├── Syslog\
-    │   ├── Syslog.csv
-    │   ├── Syslog.metadata.json
-    │   └── Syslog.zip
-    └── backup-summary.html              # Human-readable report
-```
-
-## 🔧 Advanced Usage
-
-### Automated Backups (Windows)
-
-```powershell
-# Create scheduled task for daily backups
-$action = New-ScheduledTaskAction -Execute "PowerShell.exe" `
-    -Argument "-NoProfile -File C:\Scripts\Run-SentinelBackup.ps1"
-
-$trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
-
-Register-ScheduledTask -TaskName "SentinelDailyBackup" `
-    -Action $action -Trigger $trigger
-```
-
-**Run-SentinelBackup.ps1**:
-```powershell
-#Requires -Modules SentinelLocalBackup, Az.Accounts
-
-# Service Principal auth
-$tenantId = $env:AZURE_TENANT_ID
-$appId = $env:AZURE_CLIENT_ID
-$secret = $env:AZURE_CLIENT_SECRET | ConvertTo-SecureString -AsPlainText -Force
-$cred = New-Object PSCredential($appId, $secret)
-
-Connect-AzAccount -ServicePrincipal -Credential $cred -Tenant $tenantId
-
-# Run backup
-Start-SentinelBackup `
-    -WorkspaceId "abc-123-def" `
-    -AllTables `
-    -TimeRange "1d" `
-    -Compress `
-    -OutputPath "D:\Backups\Sentinel" `
-    -Verbose
-```
-
-### Resume After Interruption
-
-```powershell
-# If backup was interrupted, find the session ID
-$sessionId = (Get-Content "C:\SentinelBackups\*\session.json" | ConvertFrom-Json).SessionId
-
-# Resume from checkpoint
-Resume-SentinelBackup -SessionId $sessionId
-```
-
-### Pattern Matching
-
-```powershell
-# Export all Security* and *Alert tables
-Start-SentinelBackup -WorkspaceId "abc-123" -Tables "Security*", "*Alert"
-```
-
-### Parallel Export (PowerShell 7+)
-
-```powershell
-# Export 3 tables concurrently
-Start-SentinelBackup -WorkspaceId "abc-123" -AllTables -Parallel 3
-```
-
-## 🔐 Security
-
-### Authentication Methods
-
-**Interactive (Default)**:
-```powershell
-Connect-AzAccount
-Start-SentinelBackup -WorkspaceId "abc-123" -AllTables
-```
-
-**Service Principal (Automated)**:
-```powershell
-$cred = Get-Credential  # AppId + Secret
-Start-SentinelBackup -WorkspaceId "abc-123" -AllTables -Credential $cred -TenantId "tenant-id"
-```
-
-### Required Permissions
-
-Minimum RBAC role on Log Analytics workspace:
-- **Log Analytics Reader** (recommended)
-- Or custom role with: `Microsoft.OperationalInsights/workspaces/query/*/read`
-
-### Data Protection
-
-⚠️ **Important**: Exported CSV files may contain sensitive data (PII, credentials)
-
-Recommendations:
-- ✅ Use BitLocker or LUKS for disk encryption
-- ✅ Store backups on secure file server
-- ✅ Implement file-level encryption (`Protect-CmsMessage`)
-- ✅ Apply retention policies (delete after 90/180/365 days)
-
-## 📊 Performance
-
-### Benchmark Estimates
-
-| Table Size | Estimated Time | Network Load |
-|------------|----------------|--------------|
-| 100k rows | 2-3 minutes | 50 MB |
-| 1M rows | 8-12 minutes | 500 MB |
-| 10M rows | 80-90 minutes | 5 GB |
-
-*Assumes: 50 MB/s network, 2s API latency per 5000-row batch*
-
-### Optimization Tips
-
-- Use `-Parallel` flag (PowerShell 7+) to export multiple tables concurrently
-- Run during off-peak hours to avoid API throttling
-- Use `-TimeRange` to export incremental data (e.g., last 24 hours)
-- Enable compression (`-Compress`) to save disk space (~90% reduction)
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**"InvalidAuthenticationToken" Error**
-```powershell
-# Solution: Re-authenticate
-Connect-AzAccount
-```
-
-**"Too Many Requests (429)" Error**
-- The tool automatically retries with exponential backoff
-- If persistent, reduce `-BatchSize` or `-Parallel` value
-
-**Disk Space Exhausted**
-- The tool checks available space before starting
-- Use `-Compress -DeleteUncompressed` to save space
-
-**Resume State Corrupted**
-- Delete `session.json` and restart backup
-
-### Debug Mode
-
-```powershell
-Start-SentinelBackup -WorkspaceId "abc-123" -AllTables -Verbose -Debug
-```
-
-## 🤝 Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
-## 📜 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- Inspired by German compliance requirements for local log storage
-- Built on top of Azure PowerShell SDK
-- Community feedback from Microsoft Sentinel users
-
-## 📧 Support
-
-- **Issues**: [GitHub Issues](https://github.com/RycnCDL/SentinelLocalBackup/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/RycnCDL/SentinelLocalBackup/discussions)
-- **Author**: [@RycnCDL](https://github.com/RycnCDL)
+This module addresses these needs with reliable, paginated export of Log Analytics tables to CSV, with SHA256 integrity hashing and resume support for large datasets.
 
 ---
 
-**⭐ If this tool helps you, please consider starring the repository!**
+## Features
+
+- **Interactive wizard** (`Start-SentinelBackup`) — guides through auth, workspace, table selection and export config in one session
+- **CSV with UTF-8 BOM** — opens correctly in German Excel and all standard tooling
+- **Time-window pagination** — handles tables of any size with configurable batch sizes
+- **Automatic resume** — `checkpoint.json` written after every batch; interrupted exports pick up exactly where they stopped
+- **Integrity validation** — SHA256 hash stored in `metadata.json` and verifiable at any time
+- **Dual authentication** — Azure CLI (`az login`) or Az PowerShell Module (`Connect-AzAccount`)
+- **Interactive table selection** — numbered list with single / range / multi / pattern / `all` selection
+- **Flexible time ranges** — 7 / 30 / 90 / 365 days or custom start/end dates
+
+---
+
+## Requirements
+
+| Requirement | Version |
+|-------------|---------|
+| PowerShell | 5.1+ (Windows) or 7+ (cross-platform) |
+| Az.Accounts | 2.12.0+ |
+| Az.OperationalInsights | 3.2.0+ |
+| RBAC | Log Analytics Reader (or higher) on the workspace |
+
+---
+
+## Installation
+
+```powershell
+# Install Azure module dependencies
+Install-Module -Name Az.Accounts            -Scope CurrentUser -Force
+Install-Module -Name Az.OperationalInsights -Scope CurrentUser -Force
+
+# Clone the repository
+git clone https://github.com/RycnCDL/SentinelLocalBackup.git
+cd SentinelLocalBackup
+
+# Import the module
+Import-Module ./SentinelLocalBackup.psd1
+```
+
+---
+
+## Quick Start
+
+### Option A — Interactive wizard (recommended)
+
+```powershell
+Import-Module ./SentinelLocalBackup.psd1
+
+Start-SentinelBackup
+```
+
+The wizard walks you through six steps:
+
+```
+Step 1  Authentication      Az CLI or Az Module, reuses existing session
+Step 2  Subscription        Lists enabled subscriptions, auto-selects if only one
+Step 3  Workspace           Lists Log Analytics workspaces via REST API
+Step 4  Table selection     Numbered list with single/range/multi/all selection
+Step 5  Export settings     Output path, time range, batch size
+Step 6  Confirm & run       Shows plan, exports each table, displays summary
+```
+
+### Option B — Direct export (scripting / automation)
+
+```powershell
+Import-Module ./SentinelLocalBackup.psd1
+
+# Authenticate first
+Connect-ToAzure
+
+# Select subscription and workspace (populates session)
+Select-Subscription
+Select-Workspace
+
+# Export a single table (last 30 days, 7-day batches)
+Export-TableToCSV -TableName "SecurityEvent" -OutputPath "D:\Backups"
+
+# Export with a custom time range
+Export-TableToCSV `
+    -TableName  "Syslog" `
+    -OutputPath "D:\Backups" `
+    -StartTime  (Get-Date).AddDays(-90) `
+    -BatchDays  1          # Use 1-day batches for high-volume tables
+```
+
+### Option C — Resume an interrupted export
+
+```powershell
+# Scan C:\SentinelBackups for incomplete exports and resume interactively
+Resume-SentinelBackup
+
+# Resume from a specific checkpoint
+Resume-SentinelBackup -CheckpointPath "C:\SentinelBackups\SecurityEvent\20250226_143000\checkpoint.json"
+
+# Scan a different output directory
+Resume-SentinelBackup -OutputPath "D:\Backups"
+```
+
+---
+
+## Command Reference
+
+### Start-SentinelBackup
+
+Interactive guided export wizard.
+
+```powershell
+Start-SentinelBackup
+    [-OutputPath <string>]   # Pre-set output directory (wizard prompts if omitted)
+    [-SkipBanner]            # Skip ASCII art (useful in automated contexts)
+```
+
+### Resume-SentinelBackup
+
+Find and resume interrupted exports.
+
+```powershell
+Resume-SentinelBackup
+    [-OutputPath <string>]          # Directory to scan (default: C:\SentinelBackups)
+    [-CheckpointPath <string>]      # Path to a specific checkpoint.json
+```
+
+### Export-TableToCSV
+
+Export a single table directly (no wizard).
+
+```powershell
+Export-TableToCSV
+    -TableName <string>                    # Required: table name (e.g. "SecurityEvent")
+    [-OutputPath <string>]                 # Default: C:\SentinelBackups
+    [-StartTime <datetime>]                # Default: 30 days ago (UTC)
+    [-EndTime <datetime>]                  # Default: now (UTC)
+    [-BatchDays <int>]                     # Days per API call, default: 7
+    [-MaxRows <int>]                       # Row safety limit, default: 500000 (0 = no limit)
+    [-SkipConfirm]                         # Skip row-count confirmation prompt
+    [-ResumeCheckpointPath <string>]       # Path to checkpoint.json to resume from
+```
+
+**Recommended `BatchDays` by table volume:**
+
+| Table | Recommended BatchDays |
+|-------|-----------------------|
+| Low-volume custom tables | 14–30 |
+| Standard tables (Syslog, CommonSecurityLog) | 7 |
+| High-volume (SecurityEvent, AzureActivity) | 1–2 |
+
+### Get-BackupStatus
+
+Display metadata from a completed export run.
+
+```powershell
+Get-BackupStatus -MetadataPath "C:\SentinelBackups\SecurityEvent\20250226_143000\metadata.json"
+```
+
+### Test-BackupIntegrity
+
+Re-hash the CSV and compare to stored SHA256.
+
+```powershell
+Test-BackupIntegrity -MetadataPath "C:\SentinelBackups\SecurityEvent\20250226_143000\metadata.json"
+```
+
+### Table Discovery
+
+```powershell
+# List all tables in the connected workspace
+Get-WorkspaceTables
+
+# Custom tables only
+Get-WorkspaceTables -IncludeCustomOnly
+
+# Filter by name pattern
+Get-WorkspaceTables -TableNameFilter "Security*"
+
+# Wildcard / regex search
+Find-Tables "Security*"
+Find-Tables "^Security" -UseRegex
+
+# Interactive numbered selection UI
+$tables = Select-Tables
+$tables = Select-Tables -Tables (Get-WorkspaceTables -TableNameFilter "Security*")
+```
+
+---
+
+## Output Structure
+
+Each export run creates a timestamped subdirectory:
+
+```
+C:\SentinelBackups\
+  SecurityEvent\
+    20250226_143000\
+      SecurityEvent_20250226_143000.csv   # UTF-8 BOM, all rows
+      metadata.json                        # Run metadata + SHA256
+      checkpoint.json                      # Present only during active/interrupted runs
+```
+
+### metadata.json
+
+```json
+{
+  "exportVersion":  "1.0",
+  "tableName":      "SecurityEvent",
+  "workspaceName":  "my-sentinel-workspace",
+  "workspaceId":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "subscriptionId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "exportedAt":     "2025-02-26T14:30:00Z",
+  "timeRangeStart": "2025-01-27T00:00:00Z",
+  "timeRangeEnd":   "2025-02-26T14:00:00Z",
+  "totalRows":      142857,
+  "batchDays":      7,
+  "wasResumed":     false,
+  "csvFile":        "SecurityEvent_20250226_143000.csv",
+  "csvSizeMB":      38.4,
+  "csvEncoding":    "UTF-8 BOM",
+  "csvSHA256":      "A3F1C2...",
+  "schema":         [ ... ],
+  "exportedBy":     "jdoe",
+  "hostname":       "WORKSTATION01"
+}
+```
+
+### checkpoint.json (resume state)
+
+Written after every successful batch. Automatically deleted on completion.
+
+```json
+{
+  "version":               "1.0",
+  "tableName":             "SecurityEvent",
+  "runId":                 "20250226_143000",
+  "csvPath":               "C:\\SentinelBackups\\SecurityEvent\\20250226_143000\\SecurityEvent_20250226_143000.csv",
+  "lastCompletedBatchEnd": "2025-02-10T00:00:00Z",
+  "totalRowsWritten":      48210,
+  "batchDays":             7,
+  "savedAt":               "2025-02-26T15:12:33Z"
+}
+```
+
+---
+
+## Automation (Scheduled Task)
+
+```powershell
+# Run-SentinelBackup.ps1 — daily incremental backup via Az CLI
+#Requires -Modules SentinelLocalBackup
+
+Import-Module SentinelLocalBackup
+
+# Uses existing az login session (configure az login with a Service Principal beforehand)
+Connect-ToAzure
+Select-Subscription
+Select-Workspace
+
+# Export last 24 hours for key tables
+$tables = @("SecurityEvent", "Syslog", "CommonSecurityLog")
+foreach ($t in $tables) {
+    Export-TableToCSV `
+        -TableName  $t `
+        -OutputPath "D:\Backups\Sentinel" `
+        -StartTime  (Get-Date).ToUniversalTime().AddDays(-1) `
+        -BatchDays  1 `
+        -SkipConfirm
+}
+```
+
+**Register as a Windows Scheduled Task:**
+
+```powershell
+$action  = New-ScheduledTaskAction -Execute "pwsh.exe" `
+               -Argument "-NonInteractive -File C:\Scripts\Run-SentinelBackup.ps1"
+$trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
+
+Register-ScheduledTask -TaskName "SentinelDailyBackup" `
+    -Action $action -Trigger $trigger -RunLevel Highest
+```
+
+---
+
+## Required Azure Permissions
+
+Minimum RBAC role on the Log Analytics workspace:
+
+- **Log Analytics Reader** — read-only query access (recommended)
+
+Or a custom role with:
+```
+Microsoft.OperationalInsights/workspaces/query/*/read
+Microsoft.OperationalInsights/workspaces/read
+```
+
+---
+
+## Data Protection
+
+Exported CSV files contain the same sensitive data as your Sentinel workspace. Apply appropriate controls:
+
+- Encrypt the backup drive (BitLocker on Windows, LUKS on Linux)
+- Store on an access-controlled file server or NAS
+- Apply retention and deletion policies (e.g. delete after 365 days)
+- Consider field-level masking for PII before sharing externally
+
+---
+
+## Performance Reference
+
+| Rows | Approximate Time | Approximate File Size |
+|------|------------------|-----------------------|
+| 100k | 1–2 min | 20–50 MB |
+| 1M | 10–15 min | 200–500 MB |
+| 10M | 90–120 min | 2–5 GB |
+
+*Assumes 7-day batches, ~2s API round-trip latency per batch, typical Log Analytics response size.*
+
+Reduce `BatchDays` for high-velocity tables to stay within the 64 MB API response limit.
+
+---
+
+## Troubleshooting
+
+**Authentication token expired mid-export**
+The export will fail on the next batch call. A `checkpoint.json` is already on disk.
+Run `Resume-SentinelBackup` after re-authenticating.
+
+**"Too many requests" (HTTP 429)**
+Reduce `-BatchDays` to spread requests over more, smaller calls.
+
+**CSV opens with garbled characters in Excel**
+Make sure you open the file with `Data > From Text/CSV` and select UTF-8 encoding,
+or double-click if your Windows locale is already set to UTF-8.
+
+**No tables returned by Get-WorkspaceTables**
+Verify your account has at least Log Analytics Reader on the workspace.
+Try the KQL fallback: `search * | summarize count() by Type` in Log Analytics directly.
+
+**Integrity check fails**
+The CSV file was modified after export. Do not open CSV files in applications that
+auto-save on open (some older Excel versions). Keep originals read-only.
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Commit with a clear message
+4. Open a Pull Request
+
+Issues and feature requests welcome at [GitHub Issues](https://github.com/RycnCDL/SentinelLocalBackup/issues).
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+## Author
+
+[@RycnCDL](https://github.com/RycnCDL) — Microsoft Security community contributor
+
+**If this tool helps your organization, please star the repository!**
