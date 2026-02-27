@@ -15,6 +15,10 @@ function Invoke-LogAnalyticsQuery {
     <#
     .SYNOPSIS
         Executes a KQL query against the Log Analytics workspace
+    .DESCRIPTION
+        Uses the ARM-based query endpoint which supports all table tiers
+        (Analytics, Basic, and Auxiliary/Data Lake) without special headers.
+        Falls back to the direct Log Analytics API if the ARM call fails.
     .PARAMETER Query
         KQL query string
     .PARAMETER Timespan
@@ -29,8 +33,40 @@ function Invoke-LogAnalyticsQuery {
     )
 
     $Session = Get-SentinelSession
+    $Config  = Get-SentinelConfig
 
-    # Get a token scoped to Log Analytics API (different from Management API)
+    $body = @{
+        query    = $Query
+        timespan = $Timespan
+    } | ConvertTo-Json
+
+    # Primary: ARM-based query endpoint (works for ALL table tiers including Auxiliary)
+    $mgmtToken = Get-AccessToken -Resource $Config.ManagementApiUrl
+    if ($mgmtToken) {
+        $armUri = "$($Config.ManagementApiUrl)/subscriptions/$($Session.SubscriptionId)" +
+                  "/resourceGroups/$($Session.ResourceGroup)" +
+                  "/providers/Microsoft.OperationalInsights/workspaces/$($Session.WorkspaceName)" +
+                  "/api/query?api-version=2017-01-01-preview"
+
+        $armHeaders = @{
+            "Authorization" = "Bearer $mgmtToken"
+            "Content-Type"  = "application/json"
+            "Prefer"        = "wait=600,include-auxiliary-logs,include-basic-logs"
+        }
+
+        try {
+            $response = Invoke-RestMethod -Uri $armUri -Headers $armHeaders -Method POST -Body $body -ErrorAction Stop
+            return $response
+        }
+        catch {
+            # ARM endpoint failed, try direct API as fallback
+            if ($Config.DebugMode) {
+                Write-Host "[DEBUG] ARM query failed: $_ - trying direct API..." -ForegroundColor Gray
+            }
+        }
+    }
+
+    # Fallback: direct Log Analytics API (works for Analytics tier)
     $logAnalyticsToken = Get-AccessToken -Resource "https://api.loganalytics.io"
     if (-not $logAnalyticsToken) {
         throw "Could not obtain Log Analytics API token."
@@ -43,11 +79,6 @@ function Invoke-LogAnalyticsQuery {
         "Content-Type"  = "application/json"
         "Prefer"        = "wait=600,include-auxiliary-logs,include-basic-logs"
     }
-
-    $body = @{
-        query    = $Query
-        timespan = $Timespan
-    } | ConvertTo-Json
 
     $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method POST -Body $body -ErrorAction Stop
     return $response
