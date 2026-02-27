@@ -51,8 +51,16 @@ function Connect-ToAzure {
         try {
             $account = az account show 2>$null | ConvertFrom-Json
             if ($account) {
-                $azCliLoggedIn = $true
-                $currentUser = $account.user.name
+                # Validate the session is actually alive by requesting a token
+                # (az account show only reads local cache and can be stale)
+                $testToken = az account get-access-token --output json 2>$null
+                if ($LASTEXITCODE -eq 0 -and $testToken) {
+                    $azCliLoggedIn = $true
+                    $currentUser = $account.user.name
+                } else {
+                    Write-ColorOutput "Azure CLI: Cached account found but token expired." "Yellow"
+                    Write-ColorOutput "  A fresh login is required." "Yellow"
+                }
             }
         } catch {}
     }
