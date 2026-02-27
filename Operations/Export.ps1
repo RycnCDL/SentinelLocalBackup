@@ -274,6 +274,8 @@ function Export-TableToCSV {
         # New file with UTF-8 BOM
         $utf8Bom      = New-Object System.Text.UTF8Encoding $true
         $streamWriter = New-Object System.IO.StreamWriter($csvPath, $false, $utf8Bom)
+        # Excel delimiter hint - tells Excel to use comma regardless of locale
+        $streamWriter.WriteLine("sep=,")
         $totalRows    = 0
         $headerWritten= $false
         $batchStart   = $StartTime
