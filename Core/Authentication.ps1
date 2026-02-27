@@ -262,15 +262,66 @@ function Get-AccessToken {
             }
         } else {
             # Use Azure CLI
-            # Resource URL WITH trailing slash for Azure CLI
-            $tokenJson = az account get-access-token --resource "$($Config.ManagementApiUrl)/" 2>$null
+            # Try --scope first (Azure CLI 2.55+), then --resource (older CLI)
+            $tokenObj  = $null
+            $lastError = ""
 
-            if ($LASTEXITCODE -ne 0) {
-                Write-ColorOutput "Azure CLI Session abgelaufen! Bitte erneut authentifizieren." "Red"
+            # Attempt 1: --scope (newer Azure CLI)
+            $rawOutput = $null
+            $errFile   = [System.IO.Path]::GetTempFileName()
+            try {
+                $rawOutput = az account get-access-token --scope "$($Config.ManagementApiUrl)/.default" --output json 2>$errFile
+                if ($LASTEXITCODE -eq 0 -and $rawOutput) {
+                    $tokenObj = $rawOutput | ConvertFrom-Json -ErrorAction Stop
+                }
+            } catch {
+                $tokenObj = $null
+            }
+
+            # Attempt 2: --resource (older Azure CLI)
+            if (-not $tokenObj) {
+                try {
+                    $rawOutput = az account get-access-token --resource "$($Config.ManagementApiUrl)/" --output json 2>$errFile
+                    if ($LASTEXITCODE -eq 0 -and $rawOutput) {
+                        $tokenObj = $rawOutput | ConvertFrom-Json -ErrorAction Stop
+                    }
+                } catch {
+                    $tokenObj = $null
+                }
+            }
+
+            # Attempt 3: no resource/scope flag at all (default management endpoint)
+            if (-not $tokenObj) {
+                try {
+                    $rawOutput = az account get-access-token --output json 2>$errFile
+                    if ($LASTEXITCODE -eq 0 -and $rawOutput) {
+                        $tokenObj = $rawOutput | ConvertFrom-Json -ErrorAction Stop
+                    }
+                } catch {
+                    $tokenObj = $null
+                }
+            }
+
+            # Read captured stderr for diagnostics
+            if (Test-Path $errFile) {
+                $lastError = (Get-Content $errFile -Raw -ErrorAction SilentlyContinue)
+                Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+            }
+
+            if (-not $tokenObj -or -not $tokenObj.accessToken) {
+                Write-ColorOutput "Azure CLI Token-Abruf fehlgeschlagen!" "Red"
+                if ($lastError) {
+                    Write-ColorOutput "  Azure CLI Fehler: $($lastError.Trim())" "Yellow"
+                }
+                Write-Host ""
+                Write-Host "  Mögliche Lösungen:" -ForegroundColor Cyan
+                Write-Host "    1. az login                         (erneut anmelden)"
+                Write-Host "    2. az account set -s <SubscriptionId>  (Subscription setzen)"
+                Write-Host "    3. az upgrade                       (Azure CLI aktualisieren)"
+                Write-Host "    4. az account get-access-token      (manueller Token-Test)"
                 return $null
             }
 
-            $tokenObj = $tokenJson | ConvertFrom-Json
             $token = $tokenObj.accessToken
 
             if ($Config.DebugMode) {
@@ -397,14 +448,30 @@ function Select-Subscription {
     $Session.SubscriptionId   = $selected.Id
     $Session.SubscriptionName = $selected.Name
 
-    # Set active subscription
+    # Set active subscription and verify it took effect
     try {
         if ($Session.UseAzModule) {
-            Set-AzContext -SubscriptionId $selected.Id -ErrorAction SilentlyContinue | Out-Null
+            Set-AzContext -SubscriptionId $selected.Id -ErrorAction Stop | Out-Null
         } else {
-            az account set --subscription $selected.Id 2>$null
+            az account set --subscription $selected.Id
+            if ($LASTEXITCODE -ne 0) {
+                Write-ColorOutput "  Failed to set subscription via Azure CLI." "Red"
+                Write-ColorOutput "  Try: az account set --subscription $($selected.Id)" "Yellow"
+                return $false
+            }
+
+            # Verify subscription is active
+            $verify = az account show --output json 2>$null | ConvertFrom-Json
+            if ($verify -and $verify.id -ne $selected.Id) {
+                Write-ColorOutput "  Warning: Active subscription does not match selection." "Yellow"
+                Write-ColorOutput "  Expected: $($selected.Id)" "Yellow"
+                Write-ColorOutput "  Active:   $($verify.id)" "Yellow"
+            }
         }
-    } catch {}
+    } catch {
+        Write-ColorOutput "  Error setting subscription: $_" "Red"
+        return $false
+    }
 
     Write-ColorOutput "  Selected: $($selected.Name)" "Green"
     return $true
