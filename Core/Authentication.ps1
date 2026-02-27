@@ -203,18 +203,28 @@ function Connect-ToAzure {
 function Get-AccessToken {
     <#
     .SYNOPSIS
-        Gets an Azure access token for management API
+        Gets an Azure access token for a specified resource
+    .PARAMETER Resource
+        The Azure resource URL to get a token for.
+        Default: https://management.azure.com (Management API)
+        Use https://api.loganalytics.io for Log Analytics queries.
     .PARAMETER ForceRefresh
         Forces token refresh (not implemented yet)
     .RETURN
         Access token string or $null if error
     #>
     param(
+        [Parameter(Mandatory=$false)]
+        [string]$Resource = "",
+
         [switch]$ForceRefresh = $false
     )
 
     $Config = Get-SentinelConfig
     $Session = Get-SentinelSession
+
+    # Default to Management API if no resource specified
+    if (-not $Resource) { $Resource = $Config.ManagementApiUrl }
 
     try {
         # Check if session data is present
@@ -242,7 +252,7 @@ function Get-AccessToken {
             }
 
             # Resource URL WITHOUT trailing slash for Az Module
-            $tokenObj = Get-AzAccessToken -ResourceUrl $Config.ManagementApiUrl -ErrorAction Stop
+            $tokenObj = Get-AzAccessToken -ResourceUrl $Resource -ErrorAction Stop
 
             # Convert token (can be SecureString or String)
             if ($tokenObj.Token -is [System.Security.SecureString]) {
@@ -274,11 +284,11 @@ function Get-AccessToken {
             $tokenObj  = $null
             $lastError = ""
 
-            # Attempt 1: --scope (newer Azure CLI)
+            # Attempt 1: --scope (newer Azure CLI 2.55+)
             $rawOutput = $null
             $errFile   = [System.IO.Path]::GetTempFileName()
             try {
-                $rawOutput = az account get-access-token --scope "$($Config.ManagementApiUrl)/.default" --output json 2>$errFile
+                $rawOutput = az account get-access-token --scope "$Resource/.default" --output json 2>$errFile
                 if ($LASTEXITCODE -eq 0 -and $rawOutput) {
                     $tokenObj = $rawOutput | ConvertFrom-Json -ErrorAction Stop
                 }
@@ -289,19 +299,7 @@ function Get-AccessToken {
             # Attempt 2: --resource (older Azure CLI)
             if (-not $tokenObj) {
                 try {
-                    $rawOutput = az account get-access-token --resource "$($Config.ManagementApiUrl)/" --output json 2>$errFile
-                    if ($LASTEXITCODE -eq 0 -and $rawOutput) {
-                        $tokenObj = $rawOutput | ConvertFrom-Json -ErrorAction Stop
-                    }
-                } catch {
-                    $tokenObj = $null
-                }
-            }
-
-            # Attempt 3: no resource/scope flag at all (default management endpoint)
-            if (-not $tokenObj) {
-                try {
-                    $rawOutput = az account get-access-token --output json 2>$errFile
+                    $rawOutput = az account get-access-token --resource "$Resource" --output json 2>$errFile
                     if ($LASTEXITCODE -eq 0 -and $rawOutput) {
                         $tokenObj = $rawOutput | ConvertFrom-Json -ErrorAction Stop
                     }

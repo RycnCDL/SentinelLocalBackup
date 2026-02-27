@@ -29,12 +29,17 @@ function Invoke-LogAnalyticsQuery {
     )
 
     $Session = Get-SentinelSession
-    $Config  = Get-SentinelConfig
+
+    # Get a token scoped to Log Analytics API (different from Management API)
+    $logAnalyticsToken = Get-AccessToken -Resource "https://api.loganalytics.io"
+    if (-not $logAnalyticsToken) {
+        throw "Could not obtain Log Analytics API token."
+    }
 
     $uri = "https://api.loganalytics.io/v1/workspaces/$($Session.WorkspaceId)/query"
 
     $headers = @{
-        "Authorization" = "Bearer $($Session.AuthToken)"
+        "Authorization" = "Bearer $logAnalyticsToken"
         "Content-Type"  = "application/json"
     }
 
