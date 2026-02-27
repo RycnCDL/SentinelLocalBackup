@@ -41,6 +41,7 @@ function Invoke-LogAnalyticsQuery {
     $headers = @{
         "Authorization" = "Bearer $logAnalyticsToken"
         "Content-Type"  = "application/json"
+        "Prefer"        = "wait=600,include-auxiliary-logs,include-basic-logs"
     }
 
     $body = @{
