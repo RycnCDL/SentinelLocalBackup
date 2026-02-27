@@ -41,17 +41,18 @@ function Invoke-LogAnalyticsQuery {
     } | ConvertTo-Json
 
     # Primary: ARM-based query endpoint (works for ALL table tiers including Auxiliary)
+    # Uses /query path (NOT /api/query) with api-version 2017-10-01
+    # Matches the proven pattern from RycnCDL/Sentinel-Tools
     $mgmtToken = Get-AccessToken -Resource $Config.ManagementApiUrl
     if ($mgmtToken) {
         $armUri = "$($Config.ManagementApiUrl)/subscriptions/$($Session.SubscriptionId)" +
                   "/resourceGroups/$($Session.ResourceGroup)" +
                   "/providers/Microsoft.OperationalInsights/workspaces/$($Session.WorkspaceName)" +
-                  "/api/query?api-version=2017-01-01-preview"
+                  "/query?api-version=2017-10-01"
 
         $armHeaders = @{
             "Authorization" = "Bearer $mgmtToken"
             "Content-Type"  = "application/json"
-            "Prefer"        = "wait=600,include-auxiliary-logs,include-basic-logs"
         }
 
         try {
@@ -59,14 +60,12 @@ function Invoke-LogAnalyticsQuery {
             return $response
         }
         catch {
-            # ARM endpoint failed, try direct API as fallback
-            if ($Config.DebugMode) {
-                Write-Host "[DEBUG] ARM query failed: $_ - trying direct API..." -ForegroundColor Gray
-            }
+            Write-ColorOutput "  [WARN] ARM query failed: $_" "Yellow"
+            Write-ColorOutput "  Falling back to direct Log Analytics API (may not support Auxiliary tables)..." "Yellow"
         }
     }
 
-    # Fallback: direct Log Analytics API (works for Analytics tier)
+    # Fallback: direct Log Analytics API (works for Analytics tier only)
     $logAnalyticsToken = Get-AccessToken -Resource "https://api.loganalytics.io"
     if (-not $logAnalyticsToken) {
         throw "Could not obtain Log Analytics API token."
@@ -77,7 +76,6 @@ function Invoke-LogAnalyticsQuery {
     $headers = @{
         "Authorization" = "Bearer $logAnalyticsToken"
         "Content-Type"  = "application/json"
-        "Prefer"        = "wait=600,include-auxiliary-logs,include-basic-logs"
     }
 
     $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method POST -Body $body -ErrorAction Stop
