@@ -18,6 +18,7 @@ $script:Config = @{
     ApiVersionAnalyticsRules = "2025-09-01"  # For alert rule templates (latest)
     ApiVersionContentTemplates = "2024-09-01"  # For Content Hub filtering
     ManagementApiUrl = "https://management.azure.com"
+    ApiVersionTables = "2022-10-01"  # For Search Jobs and table management (Auxiliary/DataLake)
     DebugMode = $false
 }
 

@@ -129,6 +129,231 @@ function ConvertTo-FlatRows {
     return $result
 }
 
+function New-SearchJob {
+    <#
+    .SYNOPSIS
+        Creates an Azure Log Analytics Search Job for Auxiliary/DataLake tables
+    .DESCRIPTION
+        Auxiliary tables cannot be queried with standard KQL. This function creates
+        a Search Job that materializes the data into a temporary _SRCH Analytics table.
+    .PARAMETER TableName
+        The source Auxiliary table name (e.g. "MyTable_CL")
+    .PARAMETER StartTime
+        Start of time range (UTC)
+    .PARAMETER EndTime
+        End of time range (UTC)
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TableName,
+
+        [Parameter(Mandatory=$true)]
+        [datetime]$StartTime,
+
+        [Parameter(Mandatory=$true)]
+        [datetime]$EndTime
+    )
+
+    $Session = Get-SentinelSession
+    $Config  = Get-SentinelConfig
+
+    $searchTableName = "${TableName}_SRCH"
+
+    $uri = "$($Config.ManagementApiUrl)/subscriptions/$($Session.SubscriptionId)" +
+           "/resourceGroups/$($Session.ResourceGroup)" +
+           "/providers/Microsoft.OperationalInsights/workspaces/$($Session.WorkspaceName)" +
+           "/tables/${searchTableName}?api-version=$($Config.ApiVersionTables)"
+
+    $body = @{
+        properties = @{
+            searchResults = @{
+                query           = $TableName
+                limit           = 100000000
+                startSearchTime = $StartTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                endSearchTime   = $EndTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            }
+        }
+    } | ConvertTo-Json -Depth 5
+
+    $mgmtToken = Get-AccessToken -Resource $Config.ManagementApiUrl
+    if (-not $mgmtToken) {
+        throw "Could not obtain Management API token for Search Job creation."
+    }
+
+    $headers = @{
+        "Authorization" = "Bearer $mgmtToken"
+        "Content-Type"  = "application/json"
+    }
+
+    # Attempt to create the Search Job
+    try {
+        $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method PUT -Body $body -ErrorAction Stop
+    }
+    catch {
+        $statusCode = $null
+        if ($_.Exception.Response) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+
+        # 409 Conflict = _SRCH table already exists from a previous run
+        if ($statusCode -eq 409) {
+            Write-ColorOutput "    [Search Job] Existing _SRCH table found - cleaning up before retry..." "Yellow"
+            try {
+                $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method DELETE -ErrorAction Stop
+            } catch {
+                Write-ColorOutput "    [WARN] Could not delete existing _SRCH table: $_" "Yellow"
+            }
+            Start-Sleep -Seconds 10
+
+            # Retry once
+            try {
+                $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method PUT -Body $body -ErrorAction Stop
+            }
+            catch {
+                throw "Search Job creation failed after cleanup retry: $_"
+            }
+        }
+        # 429 = too many concurrent jobs
+        elseif ($statusCode -eq 429) {
+            throw "Too many concurrent Search Jobs (workspace limit: 10). " +
+                  "Wait for existing jobs to complete and try again."
+        }
+        else {
+            throw "Search Job creation failed: $_"
+        }
+    }
+
+    return [PSCustomObject]@{
+        SearchTableName = $searchTableName
+        JobUri          = $uri
+    }
+}
+
+function Wait-SearchJob {
+    <#
+    .SYNOPSIS
+        Polls a Search Job until completion or failure
+    .DESCRIPTION
+        Performs GET on the _SRCH table URI and checks provisioningState.
+        States: Updating/InProgress = running, Succeeded = done.
+    .PARAMETER JobUri
+        Full ARM URI for the _SRCH table
+    .PARAMETER TimeoutMinutes
+        Maximum wait time. Default: 60.
+    .PARAMETER PollIntervalSeconds
+        Seconds between polls. Default: 30.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$JobUri,
+
+        [Parameter(Mandatory=$false)]
+        [int]$TimeoutMinutes = 60,
+
+        [Parameter(Mandatory=$false)]
+        [int]$PollIntervalSeconds = 30
+    )
+
+    $Config    = Get-SentinelConfig
+    $deadline  = (Get-Date).AddMinutes($TimeoutMinutes)
+    $startedAt = Get-Date
+    $lastTokenRefresh = Get-Date
+
+    $mgmtToken = Get-AccessToken -Resource $Config.ManagementApiUrl
+    $headers   = @{
+        "Authorization" = "Bearer $mgmtToken"
+        "Content-Type"  = "application/json"
+    }
+
+    $retryCount = 0
+
+    while ((Get-Date) -lt $deadline) {
+        # Refresh token every 15 minutes
+        if (((Get-Date) - $lastTokenRefresh).TotalMinutes -ge 15) {
+            $mgmtToken = Get-AccessToken -Resource $Config.ManagementApiUrl
+            $headers["Authorization"] = "Bearer $mgmtToken"
+            $lastTokenRefresh = Get-Date
+        }
+
+        try {
+            $response = Invoke-RestMethod -Uri $JobUri -Headers $headers -Method GET -ErrorAction Stop
+            $state    = $response.properties.provisioningState
+            $retryCount = 0  # reset on success
+
+            $elapsed = [math]::Round(((Get-Date) - $startedAt).TotalMinutes, 1)
+
+            switch -Wildcard ($state) {
+                "Succeeded" {
+                    return $true
+                }
+                "Updating" {
+                    Write-ColorOutput "    [Search Job] Status: $state | Elapsed: ${elapsed}m | Polling every ${PollIntervalSeconds}s..." "Gray"
+                }
+                "InProgress" {
+                    Write-ColorOutput "    [Search Job] Status: $state | Elapsed: ${elapsed}m | Polling every ${PollIntervalSeconds}s..." "Gray"
+                }
+                "Deleting" {
+                    throw "Search Job table is being deleted by another process."
+                }
+                default {
+                    throw "Search Job reached unexpected state: '$state'"
+                }
+            }
+        }
+        catch [System.Net.WebException] {
+            $retryCount++
+            if ($retryCount -ge 3) {
+                throw "Search Job polling failed after 3 retries: $_"
+            }
+            Write-ColorOutput "    [Search Job] Transient error (retry $retryCount/3): $_" "Yellow"
+        }
+
+        Start-Sleep -Seconds $PollIntervalSeconds
+    }
+
+    throw "Search Job timed out after $TimeoutMinutes minutes. " +
+          "The job may still be running in Azure - check the workspace tables for the _SRCH table. " +
+          "You can re-run the export to try again."
+}
+
+function Remove-SearchJob {
+    <#
+    .SYNOPSIS
+        Deletes the temporary _SRCH table (best-effort cleanup)
+    .PARAMETER JobUri
+        Full ARM URI for the _SRCH table
+    .PARAMETER Silent
+        Suppress output messages
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$JobUri,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$Silent
+    )
+
+    $Config = Get-SentinelConfig
+
+    try {
+        $mgmtToken = Get-AccessToken -Resource $Config.ManagementApiUrl
+        $headers   = @{
+            "Authorization" = "Bearer $mgmtToken"
+            "Content-Type"  = "application/json"
+        }
+        $null = Invoke-RestMethod -Uri $JobUri -Headers $headers -Method DELETE -ErrorAction Stop
+        if (-not $Silent) {
+            Write-ColorOutput "  [Search Job] Cleanup: Deleted temporary _SRCH table" "Gray"
+        }
+    }
+    catch {
+        if (-not $Silent) {
+            Write-ColorOutput "  [WARN] Search Job cleanup failed: $_" "Yellow"
+            Write-ColorOutput "         You may need to manually delete the _SRCH table from the workspace." "Gray"
+        }
+    }
+}
+
 function New-OutputDirectory {
     <#
     .SYNOPSIS
@@ -269,69 +494,141 @@ function Export-TableToCSV {
     }
     Write-Host ""
 
-    # --- Step 1: Row count estimate (skip on resume) ---
-    # Azure may report Auxiliary tables as "Auxiliary", "DataLake", or other variants
+    # --- Auxiliary / Search Job setup ---
     $isAuxiliary = $TablePlan -imatch '^(Auxiliary|DataLake)$'
-    $timeFilter = if ($isAuxiliary) { "ingestion_time()" } else { "TimeGenerated" }
-    if ($isAuxiliary) {
-        Write-ColorOutput "  [INFO] Auxiliary table detected - using ingestion_time() for time filtering" "Yellow"
+
+    # For resume: restore TablePlan from checkpoint if stored
+    if ($isResuming -and $cp.tablePlan) {
+        $TablePlan   = $cp.tablePlan
+        $isAuxiliary = $TablePlan -imatch '^(Auxiliary|DataLake)$'
     }
 
-    if (-not $isResuming) {
-        Write-ColorOutput "  [1/4] Estimating row count..." "Yellow"
+    # These may be overridden after Search Job creation for Auxiliary tables
+    $effectiveTableName = $TableName
+    $effectiveTablePlan = $TablePlan
+    $timeFilter         = "TimeGenerated"
+    $searchJobUri       = $null
 
-        $isoStart = $StartTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        $isoEnd   = $EndTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        $countKql = "$TableName | where $timeFilter between (datetime('$isoStart') .. datetime('$isoEnd')) | count"
+    if ($isAuxiliary) {
+        Write-ColorOutput "  [INFO] Auxiliary/DataLake table detected - will use Search Job workflow" "Yellow"
+    }
 
+    # ── Outer try/finally for Search Job cleanup ──────────────────────────────
+    try {
+
+    if ($isAuxiliary) {
+        # ── Auxiliary path: Search Job → export from _SRCH table ──────────────
+
+        # --- Step 1: Skip row count (can't query Auxiliary directly) ---
+        if (-not $isResuming) {
+            Write-ColorOutput "  [1/5] Skipping row count estimate (Auxiliary tables require Search Jobs)" "Gray"
+            Write-ColorOutput "        The Search Job will process all data in the time range." "Gray"
+        } else {
+            Write-ColorOutput "  [1/5] Skipping row count estimate (resuming)." "Gray"
+        }
+
+        # --- Step 2: Create & wait for Search Job ---
+        Write-ColorOutput "  [2/5] Creating Search Job for Auxiliary table..." "Yellow"
+        Write-ColorOutput "        This may take several minutes depending on data volume." "Gray"
+        Write-Host ""
+
+        $searchStartTime = if ($isResuming) {
+            [datetime]::Parse($cp.lastCompletedBatchEnd)
+        } else {
+            $StartTime
+        }
+
+        $searchJob    = New-SearchJob -TableName $TableName -StartTime $searchStartTime -EndTime $EndTime
+        $searchJobUri = $searchJob.JobUri
+
+        Write-ColorOutput "  [Search Job] Created: $($searchJob.SearchTableName)" "Cyan"
+        Write-ColorOutput "  [Search Job] Waiting for data materialization..." "Yellow"
+
+        $null = Wait-SearchJob -JobUri $searchJobUri -TimeoutMinutes 60 -PollIntervalSeconds 30
+
+        Write-ColorOutput "  [Search Job] Data materialized successfully." "Green"
+        Write-Host ""
+
+        # Switch to querying the _SRCH table (Analytics tier - standard KQL works)
+        $effectiveTableName = $searchJob.SearchTableName
+        $effectiveTablePlan = ""
+        $timeFilter         = "TimeGenerated"
+
+        # --- Step 3: Schema discovery on _SRCH table ---
+        Write-ColorOutput "  [3/5] Discovering schema from materialized _SRCH table..." "Yellow"
+
+        $schemaKql = "$effectiveTableName | getschema"
         try {
-            $countResp     = Invoke-LogAnalyticsQuery -Query $countKql -Timespan "P$(([int]($EndTime - $StartTime).TotalDays + 1))D" -TablePlan $TablePlan
-            $estimatedRows = [int]($countResp.tables[0].rows[0][0])
-            Write-ColorOutput "  Estimated rows: $($estimatedRows.ToString('N0'))" "Cyan"
+            $schemaResp = Invoke-LogAnalyticsQuery -Query $schemaKql -Timespan "P1D" -TablePlan ""
+            $schemaRows = ConvertTo-FlatRows -ApiResponse $schemaResp
+            $columns    = $schemaRows | Select-Object ColumnName, DataType, ColumnType
+            Write-ColorOutput "  Columns: $($columns.Count)" "Cyan"
         }
         catch {
-            Write-ColorOutput "  Could not estimate row count: $_" "Yellow"
-            $estimatedRows = -1
+            Write-ColorOutput "  Could not retrieve schema from _SRCH table, will infer from data." "Yellow"
+            $columns = @()
         }
 
-        if ($MaxRows -gt 0 -and $estimatedRows -gt $MaxRows) {
-            Write-ColorOutput "  WARNING: Table has $($estimatedRows.ToString('N0')) rows, limit is $($MaxRows.ToString('N0'))." "Red"
-            Write-ColorOutput "           Use -MaxRows 0 to remove limit or -StartTime to narrow range." "Red"
-            Write-Host ""
-            if (-not $SkipConfirm) {
-                $go = Get-YesNoChoice "Export first $($MaxRows.ToString('N0')) rows anyway?" "N"
+        # --- Step 4: Paginated export (numbered 4/5 for Auxiliary) ---
+        Write-ColorOutput "  [4/5] Exporting data in $BatchDays-day batches..." "Yellow"
+
+    } else {
+        # ── Standard path: direct KQL export ──────────────────────────────────
+
+        # --- Step 1: Row count estimate (skip on resume) ---
+        if (-not $isResuming) {
+            Write-ColorOutput "  [1/4] Estimating row count..." "Yellow"
+
+            $isoStart = $StartTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            $isoEnd   = $EndTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            $countKql = "$effectiveTableName | where $timeFilter between (datetime('$isoStart') .. datetime('$isoEnd')) | count"
+
+            try {
+                $countResp     = Invoke-LogAnalyticsQuery -Query $countKql -Timespan "P$(([int]($EndTime - $StartTime).TotalDays + 1))D" -TablePlan $effectiveTablePlan
+                $estimatedRows = [int]($countResp.tables[0].rows[0][0])
+                Write-ColorOutput "  Estimated rows: $($estimatedRows.ToString('N0'))" "Cyan"
+            }
+            catch {
+                Write-ColorOutput "  Could not estimate row count: $_" "Yellow"
+                $estimatedRows = -1
+            }
+
+            if ($MaxRows -gt 0 -and $estimatedRows -gt $MaxRows) {
+                Write-ColorOutput "  WARNING: Table has $($estimatedRows.ToString('N0')) rows, limit is $($MaxRows.ToString('N0'))." "Red"
+                Write-ColorOutput "           Use -MaxRows 0 to remove limit or -StartTime to narrow range." "Red"
+                Write-Host ""
+                if (-not $SkipConfirm) {
+                    $go = Get-YesNoChoice "Export first $($MaxRows.ToString('N0')) rows anyway?" "N"
+                    if (-not $go) { Write-ColorOutput "  Export cancelled." "Yellow"; return $null }
+                }
+            }
+            elseif ($estimatedRows -gt 0 -and -not $SkipConfirm) {
+                $go = Get-YesNoChoice "Export $($estimatedRows.ToString('N0')) rows from '$TableName'?" "Y"
                 if (-not $go) { Write-ColorOutput "  Export cancelled." "Yellow"; return $null }
             }
+        } else {
+            Write-ColorOutput "  [1/4] Skipping row count estimate (resuming)." "Gray"
         }
-        elseif ($estimatedRows -gt 0 -and -not $SkipConfirm) {
-            $go = Get-YesNoChoice "Export $($estimatedRows.ToString('N0')) rows from '$TableName'?" "Y"
-            if (-not $go) { Write-ColorOutput "  Export cancelled." "Yellow"; return $null }
+
+        # --- Step 2: Schema discovery ---
+        Write-ColorOutput "  [2/4] Discovering schema..." "Yellow"
+
+        $schemaKql = "$effectiveTableName | getschema"
+        try {
+            $schemaResp = Invoke-LogAnalyticsQuery -Query $schemaKql -Timespan "P1D" -TablePlan $effectiveTablePlan
+            $schemaRows = ConvertTo-FlatRows -ApiResponse $schemaResp
+            $columns    = $schemaRows | Select-Object ColumnName, DataType, ColumnType
+            Write-ColorOutput "  Columns: $($columns.Count)" "Cyan"
         }
-    } else {
-        Write-ColorOutput "  [1/4] Skipping row count estimate (resuming)." "Gray"
-    }
-
-    # --- Step 2: Schema discovery ---
-    Write-ColorOutput "  [2/4] Discovering schema..." "Yellow"
-
-    $schemaKql = "$TableName | getschema"
-    try {
-        $schemaResp = Invoke-LogAnalyticsQuery -Query $schemaKql -Timespan "P1D" -TablePlan $TablePlan
-        $schemaRows = ConvertTo-FlatRows -ApiResponse $schemaResp
-        $columns    = $schemaRows | Select-Object ColumnName, DataType, ColumnType
-        Write-ColorOutput "  Columns: $($columns.Count)" "Cyan"
-    }
-    catch {
-        if ($isAuxiliary) {
-            Write-ColorOutput "  [ERROR] Schema discovery failed for Auxiliary/DataLake table: $_" "Red"
-            throw "Cannot export Auxiliary table '$TableName': schema discovery failed. $_"
+        catch {
+            Write-ColorOutput "  Could not retrieve schema, will infer from data." "Yellow"
+            $columns = @()
         }
-        Write-ColorOutput "  Could not retrieve schema, will infer from data." "Yellow"
-        $columns = @()
-    }
 
-    # --- Step 3: Paginated export ---
-    Write-ColorOutput "  [3/4] Exporting data in $BatchDays-day batches..." "Yellow"
+        # --- Step 3: Paginated export ---
+        $stepLabel = "3/4"
+        Write-ColorOutput "  [$stepLabel] Exporting data in $BatchDays-day batches..." "Yellow"
+    }
 
     if ($isResuming) {
         # Append to existing file, no BOM (already written)
@@ -365,7 +662,7 @@ function Export-TableToCSV {
 
             $isoBS    = $batchStart.ToString("yyyy-MM-ddTHH:mm:ssZ")
             $isoBE    = $batchEnd.ToString("yyyy-MM-ddTHH:mm:ssZ")
-            $batchKql = "$TableName | where $timeFilter between (datetime('$isoBS') .. datetime('$isoBE'))"
+            $batchKql = "$effectiveTableName | where $timeFilter between (datetime('$isoBS') .. datetime('$isoBE'))"
 
             if ($MaxRows -gt 0) {
                 $remaining = $MaxRows - $totalRows
@@ -374,7 +671,7 @@ function Export-TableToCSV {
             }
 
             try {
-                $batchResp = Invoke-LogAnalyticsQuery -Query $batchKql -Timespan "P$($BatchDays + 1)D" -TablePlan $TablePlan
+                $batchResp = Invoke-LogAnalyticsQuery -Query $batchKql -Timespan "P$($BatchDays + 1)D" -TablePlan $effectiveTablePlan
                 $batchRows = ConvertTo-FlatRows -ApiResponse $batchResp
 
                 if ($batchRows.Count -eq 0) {
@@ -383,7 +680,7 @@ function Export-TableToCSV {
                     Save-Checkpoint -Path $checkpointPath -TableName $TableName -RunId $runId `
                         -CsvPath $csvPath -OutputDir $outDir -StartTime $StartTime -EndTime $EndTime `
                         -LastBatchEnd $batchEnd -TotalRows $totalRows -BatchDays $BatchDays `
-                        -MaxRows $MaxRows -Session $Session
+                        -MaxRows $MaxRows -Session $Session -TablePlan $TablePlan
                     continue
                 }
 
@@ -432,8 +729,9 @@ function Export-TableToCSV {
 
     Write-ColorOutput "  Total rows exported: $($totalRows.ToString('N0'))" "Cyan"
 
-    # --- Step 4: Metadata + integrity ---
-    Write-ColorOutput "  [4/4] Generating metadata and integrity hash..." "Yellow"
+    # --- Metadata + integrity ---
+    $metaStep = if ($isAuxiliary) { "5/5" } else { "4/4" }
+    Write-ColorOutput "  [$metaStep] Generating metadata and integrity hash..." "Yellow"
 
     $sha256    = [System.Security.Cryptography.SHA256]::Create()
     $fileBytes = [System.IO.File]::ReadAllBytes($csvPath)
@@ -468,6 +766,13 @@ function Export-TableToCSV {
 
     # Remove checkpoint - export is complete
     if (Test-Path $checkpointPath) { Remove-Item $checkpointPath -Force }
+
+    # Clean up Search Job _SRCH table (Auxiliary tables only)
+    if ($searchJobUri) {
+        Write-ColorOutput "  [Search Job] Cleaning up temporary _SRCH table..." "Gray"
+        Remove-SearchJob -JobUri $searchJobUri
+        $searchJobUri = $null  # Prevent double-cleanup in finally block
+    }
 
     # --- Summary ---
     Write-Host ""
@@ -510,6 +815,14 @@ function Export-TableToCSV {
         SHA256     = $csvHash
         Success    = $true
     }
+
+    } # end outer try
+    finally {
+        # Ensure Search Job cleanup on error (success cleanup already done above)
+        if ($searchJobUri) {
+            Remove-SearchJob -JobUri $searchJobUri -Silent
+        }
+    }
 }
 
 function Save-Checkpoint {
@@ -529,7 +842,8 @@ function Save-Checkpoint {
         [int]$TotalRows,
         [int]$BatchDays,
         [int]$MaxRows,
-        $Session
+        $Session,
+        [string]$TablePlan = ""
     )
 
     $cp = [ordered]@{
@@ -544,6 +858,7 @@ function Save-Checkpoint {
         totalRowsWritten      = $TotalRows
         batchDays             = $BatchDays
         maxRows               = $MaxRows
+        tablePlan             = $TablePlan
         savedAt               = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         workspaceName         = $Session.WorkspaceName
         workspaceId           = $Session.WorkspaceId

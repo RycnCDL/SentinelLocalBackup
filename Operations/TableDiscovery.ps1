@@ -350,9 +350,9 @@ function Select-Tables {
         if ($auxTables.Count -gt 0) {
             Write-Host ""
             Write-ColorOutput "  [NOTE] $($auxTables.Count) Auxiliary/DataLake table(s) selected." "Yellow"
-            Write-ColorOutput "         These tables require the ARM query endpoint and use ingestion_time()" "Gray"
-            Write-ColorOutput "         instead of TimeGenerated. Ensure your account has 'Log Analytics Reader'" "Gray"
-            Write-ColorOutput "         role on the workspace for the export to succeed." "Gray"
+            Write-ColorOutput "         These tables will use Azure Search Jobs to materialize data before export." "Gray"
+            Write-ColorOutput "         This process takes longer (minutes to hours) depending on data volume." "Gray"
+            Write-ColorOutput "         The temporary _SRCH table will be automatically cleaned up after export." "Gray"
         }
         Write-Host ""
 

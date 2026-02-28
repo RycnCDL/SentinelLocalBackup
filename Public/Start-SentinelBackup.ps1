@@ -165,6 +165,7 @@ function Start-SentinelBackup {
     Write-Host "  │  Export Plan                                                │" -ForegroundColor DarkGray
     Write-Host "  ├─────────────────────────────────────────────────────────────┤" -ForegroundColor DarkGray
 
+    $auxCount = ($selectedTables | Where-Object { $_.Plan -imatch '^(Auxiliary|DataLake)$' }).Count
     $planLines = @(
         @{ L = "Workspace"; V = $Session.WorkspaceName },
         @{ L = "Tables";    V = "$($selectedTables.Count) selected" },
@@ -173,6 +174,9 @@ function Start-SentinelBackup {
         @{ L = "Batch";     V = "$batchDays day(s) per API call" },
         @{ L = "Output";    V = $OutputPath }
     )
+    if ($auxCount -gt 0) {
+        $planLines += @{ L = "Note"; V = "$auxCount Auxiliary table(s) will use Search Jobs" }
+    }
     foreach ($pl in $planLines) {
         $label = $pl.L.PadRight(10)
         $val   = $pl.V
