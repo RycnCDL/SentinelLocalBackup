@@ -269,12 +269,19 @@ function Export-TableToCSV {
     Write-Host ""
 
     # --- Step 1: Row count estimate (skip on resume) ---
+    $isAuxiliary = $TablePlan -eq "Auxiliary"
+    # Auxiliary tables may not support TimeGenerated filtering; use ingestion_time() instead
+    $timeFilter = if ($isAuxiliary) { "ingestion_time()" } else { "TimeGenerated" }
+    if ($isAuxiliary) {
+        Write-ColorOutput "  [INFO] Auxiliary table detected - using ingestion_time() for time filtering" "Yellow"
+    }
+
     if (-not $isResuming) {
         Write-ColorOutput "  [1/4] Estimating row count..." "Yellow"
 
         $isoStart = $StartTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
         $isoEnd   = $EndTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        $countKql = "$TableName | where TimeGenerated between (datetime('$isoStart') .. datetime('$isoEnd')) | count"
+        $countKql = "$TableName | where $timeFilter between (datetime('$isoStart') .. datetime('$isoEnd')) | count"
 
         try {
             $countResp     = Invoke-LogAnalyticsQuery -Query $countKql -Timespan "P$(([int]($EndTime - $StartTime).TotalDays + 1))D" -TablePlan $TablePlan
@@ -357,7 +364,7 @@ function Export-TableToCSV {
 
             $isoBS    = $batchStart.ToString("yyyy-MM-ddTHH:mm:ssZ")
             $isoBE    = $batchEnd.ToString("yyyy-MM-ddTHH:mm:ssZ")
-            $batchKql = "$TableName | where TimeGenerated between (datetime('$isoBS') .. datetime('$isoBE'))"
+            $batchKql = "$TableName | where $timeFilter between (datetime('$isoBS') .. datetime('$isoBE'))"
 
             if ($MaxRows -gt 0) {
                 $remaining = $MaxRows - $totalRows
