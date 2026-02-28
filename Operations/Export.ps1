@@ -17,23 +17,31 @@ function Invoke-LogAnalyticsQuery {
         Executes a KQL query against the Log Analytics workspace
     .DESCRIPTION
         Uses the ARM-based query endpoint which supports all table tiers
-        (Analytics, Basic, and Auxiliary/Data Lake) without special headers.
-        Falls back to the direct Log Analytics API if the ARM call fails.
+        (Analytics, Basic, and Auxiliary/Data Lake).
+        Falls back to the direct Log Analytics API only for non-Auxiliary tables.
     .PARAMETER Query
         KQL query string
     .PARAMETER Timespan
         ISO 8601 timespan (e.g. P7D for 7 days, P30D for 30 days)
+    .PARAMETER TablePlan
+        The table's plan tier (e.g. "Analytics", "Basic", "Auxiliary").
+        When set to "Auxiliary", the fallback to the direct Log Analytics API
+        is blocked because that API does not support Auxiliary tables.
     #>
     param(
         [Parameter(Mandatory=$true)]
         [string]$Query,
 
         [Parameter(Mandatory=$false)]
-        [string]$Timespan = "P30D"
+        [string]$Timespan = "P30D",
+
+        [Parameter(Mandatory=$false)]
+        [string]$TablePlan = ""
     )
 
     $Session = Get-SentinelSession
     $Config  = Get-SentinelConfig
+    $isAuxiliary = $TablePlan -eq "Auxiliary"
 
     $body = @{
         query    = $Query
@@ -41,18 +49,22 @@ function Invoke-LogAnalyticsQuery {
     } | ConvertTo-Json
 
     # Primary: ARM-based query endpoint (works for ALL table tiers including Auxiliary)
-    # Uses /query path (NOT /api/query) with api-version 2017-10-01
-    # Matches the proven pattern from RycnCDL/Sentinel-Tools
+    # Uses /query path (NOT /api/query) with api-version 2022-10-01
     $mgmtToken = Get-AccessToken -Resource $Config.ManagementApiUrl
     if ($mgmtToken) {
         $armUri = "$($Config.ManagementApiUrl)/subscriptions/$($Session.SubscriptionId)" +
                   "/resourceGroups/$($Session.ResourceGroup)" +
                   "/providers/Microsoft.OperationalInsights/workspaces/$($Session.WorkspaceName)" +
-                  "/query?api-version=2017-10-01"
+                  "/query?api-version=2022-10-01"
 
         $armHeaders = @{
             "Authorization" = "Bearer $mgmtToken"
             "Content-Type"  = "application/json"
+        }
+
+        # Auxiliary tables may need longer server-side processing time
+        if ($isAuxiliary) {
+            $armHeaders["Prefer"] = "wait=600"
         }
 
         try {
@@ -60,12 +72,21 @@ function Invoke-LogAnalyticsQuery {
             return $response
         }
         catch {
+            if ($isAuxiliary) {
+                throw "ARM query failed for Auxiliary table: $_. " +
+                      "The direct Log Analytics API does not support Auxiliary tables, so no fallback is available. " +
+                      "Verify that your account has 'Log Analytics Reader' on the workspace and that the table contains data."
+            }
             Write-ColorOutput "  [WARN] ARM query failed: $_" "Yellow"
-            Write-ColorOutput "  Falling back to direct Log Analytics API (may not support Auxiliary tables)..." "Yellow"
+            Write-ColorOutput "  Falling back to direct Log Analytics API..." "Yellow"
         }
     }
+    elseif ($isAuxiliary) {
+        throw "Could not obtain Management API token. " +
+              "Auxiliary tables require the ARM query endpoint and cannot use the direct Log Analytics API fallback."
+    }
 
-    # Fallback: direct Log Analytics API (works for Analytics tier only)
+    # Fallback: direct Log Analytics API (works for Analytics/Basic tiers only)
     $logAnalyticsToken = Get-AccessToken -Resource "https://api.loganalytics.io"
     if (-not $logAnalyticsToken) {
         throw "Could not obtain Log Analytics API token."
@@ -165,6 +186,11 @@ function Export-TableToCSV {
         Safety limit on total rows exported. 0 = no limit. Default: 500000.
     .PARAMETER SkipConfirm
         Skip the row-count confirmation prompt before exporting.
+    .PARAMETER TablePlan
+        The table's plan tier (e.g. "Analytics", "Basic", "Auxiliary").
+        Passed through to Invoke-LogAnalyticsQuery to ensure correct API
+        routing. Auxiliary tables require the ARM endpoint and cannot fall
+        back to the direct Log Analytics API.
     .PARAMETER ResumeCheckpointPath
         Path to a checkpoint.json from an interrupted run. When provided the
         export appends to the existing CSV starting from where it stopped.
@@ -195,6 +221,9 @@ function Export-TableToCSV {
 
         [Parameter(Mandatory=$false)]
         [switch]$SkipConfirm,
+
+        [Parameter(Mandatory=$false)]
+        [string]$TablePlan = "",
 
         [Parameter(Mandatory=$false)]
         [string]$ResumeCheckpointPath = ""
@@ -248,7 +277,7 @@ function Export-TableToCSV {
         $countKql = "$TableName | where TimeGenerated between (datetime('$isoStart') .. datetime('$isoEnd')) | count"
 
         try {
-            $countResp     = Invoke-LogAnalyticsQuery -Query $countKql -Timespan "P$(([int]($EndTime - $StartTime).TotalDays + 1))D"
+            $countResp     = Invoke-LogAnalyticsQuery -Query $countKql -Timespan "P$(([int]($EndTime - $StartTime).TotalDays + 1))D" -TablePlan $TablePlan
             $estimatedRows = [int]($countResp.tables[0].rows[0][0])
             Write-ColorOutput "  Estimated rows: $($estimatedRows.ToString('N0'))" "Cyan"
         }
@@ -279,12 +308,16 @@ function Export-TableToCSV {
 
     $schemaKql = "$TableName | getschema"
     try {
-        $schemaResp = Invoke-LogAnalyticsQuery -Query $schemaKql -Timespan "P1D"
+        $schemaResp = Invoke-LogAnalyticsQuery -Query $schemaKql -Timespan "P1D" -TablePlan $TablePlan
         $schemaRows = ConvertTo-FlatRows -ApiResponse $schemaResp
         $columns    = $schemaRows | Select-Object ColumnName, DataType, ColumnType
         Write-ColorOutput "  Columns: $($columns.Count)" "Cyan"
     }
     catch {
+        if ($TablePlan -eq "Auxiliary") {
+            Write-ColorOutput "  [ERROR] Schema discovery failed for Auxiliary table: $_" "Red"
+            throw "Cannot export Auxiliary table '$TableName': schema discovery failed. $_"
+        }
         Write-ColorOutput "  Could not retrieve schema, will infer from data." "Yellow"
         $columns = @()
     }
@@ -333,7 +366,7 @@ function Export-TableToCSV {
             }
 
             try {
-                $batchResp = Invoke-LogAnalyticsQuery -Query $batchKql -Timespan "P$($BatchDays + 1)D"
+                $batchResp = Invoke-LogAnalyticsQuery -Query $batchKql -Timespan "P$($BatchDays + 1)D" -TablePlan $TablePlan
                 $batchRows = ConvertTo-FlatRows -ApiResponse $batchResp
 
                 if ($batchRows.Count -eq 0) {

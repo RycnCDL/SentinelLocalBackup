@@ -219,6 +219,7 @@ function Start-SentinelBackup {
                 -StartTime  $startTime `
                 -EndTime    $endTime `
                 -BatchDays  $batchDays `
+                -TablePlan  $(if ($table.Plan) { $table.Plan } else { "" }) `
                 -SkipConfirm
 
             $results += $result

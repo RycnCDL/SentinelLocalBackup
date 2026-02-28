@@ -230,7 +230,9 @@ function Select-Tables {
             if (-not $meta) { $meta = "-" }
             $metaPad = $meta.PadRight(23)
 
-            $color = if ($t.Kind -eq "CustomLog" -or $t.Name -match "_CL$") { "Cyan" } else { "White" }
+            $color = if ($t.Plan -eq "Auxiliary") { "Magenta" }
+                     elseif ($t.Kind -eq "CustomLog" -or $t.Name -match "_CL$") { "Cyan" }
+                     else { "White" }
 
             Write-Host "  │ " -ForegroundColor DarkGray -NoNewline
             Write-Host "$num" -ForegroundColor Yellow -NoNewline
@@ -244,7 +246,9 @@ function Select-Tables {
         Write-Host "  └────┴────────────────────────────────┴─────────────────────────┘" -ForegroundColor DarkGray
         Write-Host "  " -NoNewline
         Write-Host "Cyan" -ForegroundColor Cyan -NoNewline
-        Write-Host " = custom log table (_CL suffix)" -ForegroundColor Gray
+        Write-Host " = custom log table (_CL suffix)  " -ForegroundColor Gray -NoNewline
+        Write-Host "Magenta" -ForegroundColor Magenta -NoNewline
+        Write-Host " = Auxiliary plan (requires ARM endpoint)" -ForegroundColor Gray
         Write-Host ""
 
         if ($AllowMultiple) {
@@ -335,7 +339,19 @@ function Select-Tables {
         Write-Host ""
         Write-Host "  Selected $($selected.Count) table(s):" -ForegroundColor Green
         foreach ($t in $selected) {
-            Write-Host "    - $($t.Name)" -ForegroundColor Cyan
+            $indicator = if ($t.Plan -eq "Auxiliary") { " (Auxiliary)" } else { "" }
+            $nameColor = if ($t.Plan -eq "Auxiliary") { "Magenta" } else { "Cyan" }
+            Write-Host "    - $($t.Name)$indicator" -ForegroundColor $nameColor
+        }
+
+        # Warn about Auxiliary tables
+        $auxTables = $selected | Where-Object { $_.Plan -eq "Auxiliary" }
+        if ($auxTables.Count -gt 0) {
+            Write-Host ""
+            Write-ColorOutput "  [NOTE] $($auxTables.Count) Auxiliary table(s) selected." "Yellow"
+            Write-ColorOutput "         Auxiliary tables require the ARM query endpoint (not the direct" "Gray"
+            Write-ColorOutput "         Log Analytics API). Ensure your account has 'Log Analytics Reader'" "Gray"
+            Write-ColorOutput "         role on the workspace for the export to succeed." "Gray"
         }
         Write-Host ""
 
