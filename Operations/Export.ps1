@@ -50,13 +50,13 @@ function Invoke-LogAnalyticsQuery {
     } | ConvertTo-Json
 
     # Primary: ARM-based query endpoint (works for ALL table tiers including Auxiliary)
-    # Uses /query path (NOT /api/query) with api-version 2022-10-01
+    # Uses /query path (NOT /api/query) with api-version 2017-10-01 (only supported version)
     $mgmtToken = Get-AccessToken -Resource $Config.ManagementApiUrl
     if ($mgmtToken) {
         $armUri = "$($Config.ManagementApiUrl)/subscriptions/$($Session.SubscriptionId)" +
                   "/resourceGroups/$($Session.ResourceGroup)" +
                   "/providers/Microsoft.OperationalInsights/workspaces/$($Session.WorkspaceName)" +
-                  "/query?api-version=2022-10-01"
+                  "/query?api-version=2017-10-01"
 
         $armHeaders = @{
             "Authorization" = "Bearer $mgmtToken"
