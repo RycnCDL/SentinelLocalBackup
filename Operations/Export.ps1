@@ -41,7 +41,8 @@ function Invoke-LogAnalyticsQuery {
 
     $Session = Get-SentinelSession
     $Config  = Get-SentinelConfig
-    $isAuxiliary = $TablePlan -eq "Auxiliary"
+    # Azure may report Auxiliary tables as "Auxiliary", "DataLake", or other variants
+    $isAuxiliary = $TablePlan -imatch '^(Auxiliary|DataLake)$'
 
     $body = @{
         query    = $Query
@@ -269,8 +270,8 @@ function Export-TableToCSV {
     Write-Host ""
 
     # --- Step 1: Row count estimate (skip on resume) ---
-    $isAuxiliary = $TablePlan -eq "Auxiliary"
-    # Auxiliary tables may not support TimeGenerated filtering; use ingestion_time() instead
+    # Azure may report Auxiliary tables as "Auxiliary", "DataLake", or other variants
+    $isAuxiliary = $TablePlan -imatch '^(Auxiliary|DataLake)$'
     $timeFilter = if ($isAuxiliary) { "ingestion_time()" } else { "TimeGenerated" }
     if ($isAuxiliary) {
         Write-ColorOutput "  [INFO] Auxiliary table detected - using ingestion_time() for time filtering" "Yellow"
@@ -321,8 +322,8 @@ function Export-TableToCSV {
         Write-ColorOutput "  Columns: $($columns.Count)" "Cyan"
     }
     catch {
-        if ($TablePlan -eq "Auxiliary") {
-            Write-ColorOutput "  [ERROR] Schema discovery failed for Auxiliary table: $_" "Red"
+        if ($isAuxiliary) {
+            Write-ColorOutput "  [ERROR] Schema discovery failed for Auxiliary/DataLake table: $_" "Red"
             throw "Cannot export Auxiliary table '$TableName': schema discovery failed. $_"
         }
         Write-ColorOutput "  Could not retrieve schema, will infer from data." "Yellow"

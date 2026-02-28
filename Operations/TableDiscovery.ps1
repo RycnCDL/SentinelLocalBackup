@@ -230,7 +230,7 @@ function Select-Tables {
             if (-not $meta) { $meta = "-" }
             $metaPad = $meta.PadRight(23)
 
-            $color = if ($t.Plan -eq "Auxiliary") { "Magenta" }
+            $color = if ($t.Plan -imatch '^(Auxiliary|DataLake)$') { "Magenta" }
                      elseif ($t.Kind -eq "CustomLog" -or $t.Name -match "_CL$") { "Cyan" }
                      else { "White" }
 
@@ -248,7 +248,7 @@ function Select-Tables {
         Write-Host "Cyan" -ForegroundColor Cyan -NoNewline
         Write-Host " = custom log table (_CL suffix)  " -ForegroundColor Gray -NoNewline
         Write-Host "Magenta" -ForegroundColor Magenta -NoNewline
-        Write-Host " = Auxiliary plan (requires ARM endpoint)" -ForegroundColor Gray
+        Write-Host " = Auxiliary/DataLake plan (requires ARM endpoint)" -ForegroundColor Gray
         Write-Host ""
 
         if ($AllowMultiple) {
@@ -339,18 +339,19 @@ function Select-Tables {
         Write-Host ""
         Write-Host "  Selected $($selected.Count) table(s):" -ForegroundColor Green
         foreach ($t in $selected) {
-            $indicator = if ($t.Plan -eq "Auxiliary") { " (Auxiliary)" } else { "" }
-            $nameColor = if ($t.Plan -eq "Auxiliary") { "Magenta" } else { "Cyan" }
+            $isAux     = $t.Plan -imatch '^(Auxiliary|DataLake)$'
+            $indicator = if ($isAux) { " ($($t.Plan))" } else { "" }
+            $nameColor = if ($isAux) { "Magenta" } else { "Cyan" }
             Write-Host "    - $($t.Name)$indicator" -ForegroundColor $nameColor
         }
 
-        # Warn about Auxiliary tables
-        $auxTables = $selected | Where-Object { $_.Plan -eq "Auxiliary" }
+        # Warn about Auxiliary/DataLake tables
+        $auxTables = $selected | Where-Object { $_.Plan -imatch '^(Auxiliary|DataLake)$' }
         if ($auxTables.Count -gt 0) {
             Write-Host ""
-            Write-ColorOutput "  [NOTE] $($auxTables.Count) Auxiliary table(s) selected." "Yellow"
-            Write-ColorOutput "         Auxiliary tables require the ARM query endpoint (not the direct" "Gray"
-            Write-ColorOutput "         Log Analytics API). Ensure your account has 'Log Analytics Reader'" "Gray"
+            Write-ColorOutput "  [NOTE] $($auxTables.Count) Auxiliary/DataLake table(s) selected." "Yellow"
+            Write-ColorOutput "         These tables require the ARM query endpoint and use ingestion_time()" "Gray"
+            Write-ColorOutput "         instead of TimeGenerated. Ensure your account has 'Log Analytics Reader'" "Gray"
             Write-ColorOutput "         role on the workspace for the export to succeed." "Gray"
         }
         Write-Host ""
