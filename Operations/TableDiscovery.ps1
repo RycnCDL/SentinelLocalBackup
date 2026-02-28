@@ -79,6 +79,14 @@ function Get-WorkspaceTables {
         }
 
         Write-ColorOutput "  Found $($tables.Count) tables via REST API" "Gray"
+
+        # Show plan tier breakdown to help identify Auxiliary tables
+        $planGroups = $tables | Group-Object Plan | Sort-Object Count -Descending
+        foreach ($pg in $planGroups) {
+            $planName = if ($pg.Name) { $pg.Name } else { "(none)" }
+            $color = if ($planName -imatch '^(Auxiliary|DataLake)$') { "Magenta" } else { "Gray" }
+            Write-ColorOutput "    Plan '$planName': $($pg.Count) table(s)" $color
+        }
     }
     catch {
         Write-ColorOutput "  REST API unavailable, falling back to KQL..." "Yellow"

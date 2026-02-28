@@ -495,7 +495,9 @@ function Export-TableToCSV {
     Write-Host ""
 
     # --- Auxiliary / Search Job setup ---
+    Write-ColorOutput "  [DEBUG] TablePlan received: '$TablePlan'" "Magenta"
     $isAuxiliary = $TablePlan -imatch '^(Auxiliary|DataLake)$'
+    Write-ColorOutput "  [DEBUG] isAuxiliary: $isAuxiliary" "Magenta"
 
     # For resume: restore TablePlan from checkpoint if stored
     if ($isResuming -and $cp.tablePlan) {
@@ -710,7 +712,7 @@ function Export-TableToCSV {
                 Save-Checkpoint -Path $checkpointPath -TableName $TableName -RunId $runId `
                     -CsvPath $csvPath -OutputDir $outDir -StartTime $StartTime -EndTime $EndTime `
                     -LastBatchEnd $batchEnd -TotalRows $totalRows -BatchDays $BatchDays `
-                    -MaxRows $MaxRows -Session $Session
+                    -MaxRows $MaxRows -Session $Session -TablePlan $TablePlan
             }
             catch {
                 Write-ColorOutput "    [WARN] Batch $($batchNum) failed: $_" "Yellow"
