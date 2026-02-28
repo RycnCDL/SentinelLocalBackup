@@ -80,12 +80,18 @@ function Get-WorkspaceTables {
 
         Write-ColorOutput "  Found $($tables.Count) tables via REST API" "Gray"
 
-        # Show plan tier breakdown to help identify Auxiliary tables
-        $planGroups = $tables | Group-Object Plan | Sort-Object Count -Descending
-        foreach ($pg in $planGroups) {
-            $planName = if ($pg.Name) { $pg.Name } else { "(none)" }
-            $color = if ($planName -imatch '^(Auxiliary|DataLake)$') { "Magenta" } else { "Gray" }
-            Write-ColorOutput "    Plan '$planName': $($pg.Count) table(s)" $color
+        # Show plan tier breakdown to help identify Auxiliary tables (non-fatal)
+        try {
+            $planGroups = $tables | Group-Object -Property Plan -NoElement | Sort-Object Count -Descending
+            foreach ($pg in $planGroups) {
+                $planName = "$($pg.Name)"
+                if ([string]::IsNullOrWhiteSpace($planName)) { $planName = "(none)" }
+                $color = "Gray"
+                if ($planName -imatch '^(Auxiliary|DataLake)$') { $color = "Magenta" }
+                Write-ColorOutput "    Plan '${planName}': $($pg.Count) table(s)" $color
+            }
+        } catch {
+            Write-ColorOutput "    (Could not break down plan tiers: $_)" "Gray"
         }
     }
     catch {
@@ -98,7 +104,7 @@ function Get-WorkspaceTables {
             $queryUri = "$($Config.ManagementApiUrl)/subscriptions/$($Session.SubscriptionId)" +
                         "/resourceGroups/$($Session.ResourceGroup)" +
                         "/providers/Microsoft.OperationalInsights/workspaces/$($Session.WorkspaceName)" +
-                        "/query?api-version=2020-08-01"
+                        "/query?api-version=2017-10-01"
 
             $body = @{ query = $kql } | ConvertTo-Json
 
