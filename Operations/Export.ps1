@@ -265,7 +265,8 @@ function Wait-SearchJob {
         "Content-Type"  = "application/json"
     }
 
-    $retryCount = 0
+    $retryCount    = 0
+    $sawInProgress = $false
 
     while ((Get-Date) -lt $deadline) {
         # Refresh token every 15 minutes
@@ -290,6 +291,7 @@ function Wait-SearchJob {
                     Write-ColorOutput "    [Search Job] Status: $state | Elapsed: ${elapsed}m | Polling every ${PollIntervalSeconds}s..." "Gray"
                 }
                 "InProgress" {
+                    $sawInProgress = $true
                     Write-ColorOutput "    [Search Job] Status: $state | Elapsed: ${elapsed}m | Polling every ${PollIntervalSeconds}s..." "Gray"
                 }
                 "Deleting" {
@@ -300,12 +302,40 @@ function Wait-SearchJob {
                 }
             }
         }
-        catch [System.Net.WebException] {
-            $retryCount++
-            if ($retryCount -ge 3) {
-                throw "Search Job polling failed after 3 retries: $_"
+        catch {
+            # Extract HTTP status code (works for both PS 5.1 WebException and PS 7 HttpResponseException)
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
             }
-            Write-ColorOutput "    [Search Job] Transient error (retry $retryCount/3): $_" "Yellow"
+
+            $elapsed = [math]::Round(((Get-Date) - $startedAt).TotalMinutes, 1)
+
+            if ($statusCode -eq 404) {
+                $retryCount++
+                if ($retryCount -le 3) {
+                    # Could be a transient state between InProgress and Succeeded — retry
+                    Write-ColorOutput "    [Search Job] Table returned 404 (attempt $retryCount/3) | Elapsed: ${elapsed}m — retrying..." "Yellow"
+                    Start-Sleep -Seconds $PollIntervalSeconds
+                    continue
+                }
+                # After 3 retries, the table is truly gone
+                if ($sawInProgress) {
+                    throw "Search Job _SRCH table disappeared (404 after InProgress). " +
+                          "The Search Job likely failed or the table has no data in the specified time range. " +
+                          "Check the Azure portal Activity Log for details."
+                } else {
+                    throw "Search Job _SRCH table not found (404). " +
+                          "The table may not have been created successfully. " +
+                          "Verify you have 'Log Analytics Contributor' permissions."
+                }
+            }
+
+            $retryCount++
+            if ($retryCount -ge 5) {
+                throw "Search Job polling failed after $retryCount errors: $_"
+            }
+            Write-ColorOutput "    [Search Job] Transient error (attempt $retryCount/5) | Elapsed: ${elapsed}m : $_" "Yellow"
         }
 
         Start-Sleep -Seconds $PollIntervalSeconds
