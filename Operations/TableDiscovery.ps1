@@ -87,7 +87,7 @@ function Get-WorkspaceTables {
                 $planName = "$($pg.Name)"
                 if ([string]::IsNullOrWhiteSpace($planName)) { $planName = "(none)" }
                 $color = "Gray"
-                if ($planName -imatch '^(Auxiliary|DataLake)$') { $color = "Magenta" }
+                if ($planName -imatch '^(Auxiliary|DataLake)$') { $color = "Yellow" }
                 Write-ColorOutput "    Plan '${planName}': $($pg.Count) table(s)" $color
             }
         } catch {

@@ -495,9 +495,9 @@ function Export-TableToCSV {
     Write-Host ""
 
     # --- Auxiliary / Search Job setup ---
-    Write-ColorOutput "  [DEBUG] TablePlan received: '$TablePlan'" "Magenta"
+    Write-ColorOutput "  [DEBUG] TablePlan received: '$TablePlan'" "Gray"
     $isAuxiliary = $TablePlan -imatch '^(Auxiliary|DataLake)$'
-    Write-ColorOutput "  [DEBUG] isAuxiliary: $isAuxiliary" "Magenta"
+    Write-ColorOutput "  [DEBUG] isAuxiliary: $isAuxiliary" "Gray"
 
     # For resume: restore TablePlan from checkpoint if stored
     if ($isResuming -and $cp.tablePlan) {
