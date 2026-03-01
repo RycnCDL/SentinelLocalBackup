@@ -185,9 +185,18 @@ function New-SearchJob {
         "Content-Type"  = "application/json"
     }
 
-    # Attempt to create the Search Job
+    # Attempt to create the Search Job (use Invoke-WebRequest to capture full response)
+    $asyncOpUrl = $null
     try {
-        $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method PUT -Body $body -ErrorAction Stop
+        $createResp = Invoke-WebRequest -Uri $uri -Headers $headers -Method PUT -Body $body -ErrorAction Stop
+        Write-ColorOutput "    [Search Job] PUT response: $($createResp.StatusCode) $($createResp.StatusDescription)" "Gray"
+
+        # Check for Azure-AsyncOperation header (ARM async pattern)
+        if ($createResp.Headers["Azure-AsyncOperation"]) {
+            $asyncOpUrl = $createResp.Headers["Azure-AsyncOperation"]
+            if ($asyncOpUrl -is [array]) { $asyncOpUrl = $asyncOpUrl[0] }
+            Write-ColorOutput "    [Search Job] Azure-AsyncOperation URL found" "Gray"
+        }
     }
     catch {
         $statusCode = $null
@@ -207,7 +216,12 @@ function New-SearchJob {
 
             # Retry once
             try {
-                $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method PUT -Body $body -ErrorAction Stop
+                $createResp = Invoke-WebRequest -Uri $uri -Headers $headers -Method PUT -Body $body -ErrorAction Stop
+                Write-ColorOutput "    [Search Job] Retry PUT response: $($createResp.StatusCode)" "Gray"
+                if ($createResp.Headers["Azure-AsyncOperation"]) {
+                    $asyncOpUrl = $createResp.Headers["Azure-AsyncOperation"]
+                    if ($asyncOpUrl -is [array]) { $asyncOpUrl = $asyncOpUrl[0] }
+                }
             }
             catch {
                 throw "Search Job creation failed after cleanup retry: $_"
@@ -226,6 +240,7 @@ function New-SearchJob {
     return [PSCustomObject]@{
         SearchTableName = $searchTableName
         JobUri          = $uri
+        AsyncOpUrl      = $asyncOpUrl
     }
 }
 
@@ -246,6 +261,9 @@ function Wait-SearchJob {
     param(
         [Parameter(Mandatory=$true)]
         [string]$JobUri,
+
+        [Parameter(Mandatory=$false)]
+        [string]$AsyncOpUrl = "",
 
         [Parameter(Mandatory=$false)]
         [int]$TimeoutMinutes = 60,
@@ -312,17 +330,46 @@ function Wait-SearchJob {
             $elapsed = [math]::Round(((Get-Date) - $startedAt).TotalMinutes, 1)
 
             if ($statusCode -eq 404) {
+                # Try to extract the error body for diagnostics
+                $errBody = ""
+                try {
+                    if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                        $errBody = $_.ErrorDetails.Message
+                    } elseif ($_.Exception.Response) {
+                        $sr = [System.IO.StreamReader]::new($_.Exception.Response.GetResponseStream())
+                        $errBody = $sr.ReadToEnd()
+                        $sr.Close()
+                    }
+                } catch { }
+
                 $retryCount++
+
+                # If we have an AsyncOpUrl, try polling that instead
+                if ($AsyncOpUrl -and $retryCount -eq 1) {
+                    Write-ColorOutput "    [Search Job] Table GET returned 404 — trying Azure-AsyncOperation URL..." "Yellow"
+                    try {
+                        $asyncResp = Invoke-RestMethod -Uri $AsyncOpUrl -Headers $headers -Method GET -ErrorAction Stop
+                        $asyncStatus = $asyncResp.status
+                        Write-ColorOutput "    [Search Job] AsyncOp status: $asyncStatus" "Cyan"
+                        if ($asyncResp.error) {
+                            Write-ColorOutput "    [Search Job] AsyncOp error: $($asyncResp.error.code) - $($asyncResp.error.message)" "Red"
+                        }
+                    } catch {
+                        Write-ColorOutput "    [Search Job] AsyncOp poll failed: $_" "Yellow"
+                    }
+                }
+
                 if ($retryCount -le 3) {
-                    # Could be a transient state between InProgress and Succeeded — retry
                     Write-ColorOutput "    [Search Job] Table returned 404 (attempt $retryCount/3) | Elapsed: ${elapsed}m — retrying..." "Yellow"
+                    if ($errBody) {
+                        Write-ColorOutput "    [Search Job] 404 details: $errBody" "Gray"
+                    }
                     Start-Sleep -Seconds $PollIntervalSeconds
                     continue
                 }
                 # After 3 retries, the table is truly gone
                 if ($sawInProgress) {
-                    # The job ran but the _SRCH table was cleaned up — most likely 0 results
-                    Write-ColorOutput "    [Search Job] Table removed after InProgress — likely completed with 0 results." "Yellow"
+                    Write-ColorOutput "    [Search Job] Table gone after InProgress. 404 body: $errBody" "Yellow"
                     return $false
                 } else {
                     throw "Search Job _SRCH table not found (404). " +
@@ -576,7 +623,8 @@ function Export-TableToCSV {
         Write-ColorOutput "  [Search Job] Created: $($searchJob.SearchTableName)" "Cyan"
         Write-ColorOutput "  [Search Job] Waiting for data materialization..." "Yellow"
 
-        $searchJobResult = Wait-SearchJob -JobUri $searchJobUri -TimeoutMinutes 60 -PollIntervalSeconds 30
+        $asyncOpUrl = if ($searchJob.AsyncOpUrl) { $searchJob.AsyncOpUrl } else { "" }
+        $searchJobResult = Wait-SearchJob -JobUri $searchJobUri -AsyncOpUrl $asyncOpUrl -TimeoutMinutes 60 -PollIntervalSeconds 30
 
         if ($searchJobResult -eq $false) {
             # Search Job completed but _SRCH table was removed — 0 results
