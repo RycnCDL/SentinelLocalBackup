@@ -321,9 +321,9 @@ function Wait-SearchJob {
                 }
                 # After 3 retries, the table is truly gone
                 if ($sawInProgress) {
-                    throw "Search Job _SRCH table disappeared (404 after InProgress). " +
-                          "The Search Job likely failed or the table has no data in the specified time range. " +
-                          "Check the Azure portal Activity Log for details."
+                    # The job ran but the _SRCH table was cleaned up — most likely 0 results
+                    Write-ColorOutput "    [Search Job] Table removed after InProgress — likely completed with 0 results." "Yellow"
+                    return $false
                 } else {
                     throw "Search Job _SRCH table not found (404). " +
                           "The table may not have been created successfully. " +
@@ -576,7 +576,69 @@ function Export-TableToCSV {
         Write-ColorOutput "  [Search Job] Created: $($searchJob.SearchTableName)" "Cyan"
         Write-ColorOutput "  [Search Job] Waiting for data materialization..." "Yellow"
 
-        $null = Wait-SearchJob -JobUri $searchJobUri -TimeoutMinutes 60 -PollIntervalSeconds 30
+        $searchJobResult = Wait-SearchJob -JobUri $searchJobUri -TimeoutMinutes 60 -PollIntervalSeconds 30
+
+        if ($searchJobResult -eq $false) {
+            # Search Job completed but _SRCH table was removed — 0 results
+            Write-ColorOutput "  [Search Job] Completed with no data in the specified time range." "Yellow"
+            Write-ColorOutput "  [3/5] Skipping schema discovery (no data)." "Gray"
+            Write-ColorOutput "  [4/5] Skipping export (no data)." "Gray"
+            Write-ColorOutput "  [5/5] Generating metadata for empty export..." "Yellow"
+
+            # Create empty CSV with just the BOM + separator hint
+            $utf8Bom = New-Object System.Text.UTF8Encoding $true
+            [System.IO.File]::WriteAllText($csvPath, "sep=,`r`n", $utf8Bom)
+
+            $metadata = [ordered]@{
+                exportVersion  = "1.0"
+                tableName      = $TableName
+                workspaceName  = $Session.WorkspaceName
+                workspaceId    = $Session.WorkspaceId
+                subscriptionId = $Session.SubscriptionId
+                exportedAt     = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+                timeRangeStart = $StartTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                timeRangeEnd   = $EndTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                totalRows      = 0
+                batchDays      = $BatchDays
+                wasResumed     = $isResuming
+                csvFile        = [System.IO.Path]::GetFileName($csvPath)
+                csvSizeMB      = 0
+                csvEncoding    = "UTF-8 BOM"
+                csvSHA256      = ""
+                note           = "Search Job completed with 0 results for this Auxiliary table."
+                schema         = @()
+                exportedBy     = $env:USERNAME
+                hostname       = $env:COMPUTERNAME
+            }
+            $metadata | ConvertTo-Json -Depth 5 | Out-File -FilePath $metaPath -Encoding UTF8
+
+            # Clean up checkpoint if any
+            if (Test-Path $checkpointPath) { Remove-Item $checkpointPath -Force }
+
+            $searchJobUri = $null  # Prevent cleanup in finally (already gone)
+
+            Write-Host ""
+            Write-Host "  ┌─────────────────────────────────────────────────────────────┐" -ForegroundColor DarkGray
+            Write-Host "  │  " -ForegroundColor DarkGray -NoNewline
+            Write-Host "Export Complete (0 rows)" -ForegroundColor Green -NoNewline
+            Write-Host "                                    │" -ForegroundColor DarkGray
+            Write-Host "  │  " -ForegroundColor DarkGray -NoNewline
+            Write-Host "The Auxiliary table had no data in the time range." -ForegroundColor Gray -NoNewline
+            Write-Host "     │" -ForegroundColor DarkGray
+            Write-Host "  └─────────────────────────────────────────────────────────────┘" -ForegroundColor DarkGray
+            Write-Host ""
+
+            return [PSCustomObject]@{
+                TableName  = $TableName
+                OutputDir  = $outDir
+                CsvPath    = $csvPath
+                MetaPath   = $metaPath
+                TotalRows  = 0
+                SizeMB     = 0
+                SHA256     = ""
+                Success    = $true
+            }
+        }
 
         Write-ColorOutput "  [Search Job] Data materialized successfully." "Green"
         Write-Host ""
