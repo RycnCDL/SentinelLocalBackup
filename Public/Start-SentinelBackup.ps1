@@ -165,17 +165,21 @@ function Start-SentinelBackup {
     Write-Host "  │  Export Plan                                                │" -ForegroundColor DarkGray
     Write-Host "  ├─────────────────────────────────────────────────────────────┤" -ForegroundColor DarkGray
 
-    $auxCount = ($selectedTables | Where-Object { $_.Plan -imatch '^(Auxiliary|DataLake)$' }).Count
+    # Filter out Auxiliary/DataLake tables (not supported for automated export)
+    $auxTables       = $selectedTables | Where-Object { $_.Plan -imatch '^(Auxiliary|DataLake)$' }
+    $exportableTables = $selectedTables | Where-Object { $_.Plan -notmatch '^(Auxiliary|DataLake)$' -or -not $_.Plan }
+    $auxCount        = @($auxTables).Count
+
     $planLines = @(
         @{ L = "Workspace"; V = $Session.WorkspaceName },
-        @{ L = "Tables";    V = "$($selectedTables.Count) selected" },
+        @{ L = "Tables";    V = "$($exportableTables.Count) exportable" },
         @{ L = "From";      V = $startTime.ToString("yyyy-MM-dd HH:mm") + " UTC" },
         @{ L = "To";        V = $endTime.ToString("yyyy-MM-dd HH:mm") + " UTC" },
         @{ L = "Batch";     V = "$batchDays day(s) per API call" },
         @{ L = "Output";    V = $OutputPath }
     )
     if ($auxCount -gt 0) {
-        $planLines += @{ L = "Note"; V = "$auxCount Auxiliary table(s) will use Search Jobs" }
+        $planLines += @{ L = "Skipped"; V = "$auxCount Auxiliary table(s) — not supported" }
     }
     foreach ($pl in $planLines) {
         $label = $pl.L.PadRight(10)
@@ -211,8 +215,24 @@ function Start-SentinelBackup {
     $results   = @()
     $succeeded = 0
     $failed    = 0
+    $skipped   = 0
 
-    foreach ($table in $selectedTables) {
+    # Log skipped Auxiliary tables
+    if ($auxCount -gt 0) {
+        Write-Host ""
+        Write-ColorOutput "  Skipping $auxCount Auxiliary/DataLake table(s) (not supported for automated export):" "Yellow"
+        foreach ($at in $auxTables) {
+            Write-ColorOutput "    - $($at.Name) ($($at.Plan))" "Yellow"
+            $results += [PSCustomObject]@{
+                TableName = $at.Name
+                Success   = $false
+                Error     = "Skipped: Auxiliary/DataLake tables require manual export via Azure Portal Search Jobs"
+            }
+            $skipped++
+        }
+    }
+
+    foreach ($table in $exportableTables) {
         Write-Host ""
         Write-ColorOutput "━━━ Exporting: $($table.Name) ━━━" "Cyan"
 
@@ -223,7 +243,6 @@ function Start-SentinelBackup {
                 -StartTime  $startTime `
                 -EndTime    $endTime `
                 -BatchDays  $batchDays `
-                -TablePlan  $(if ($table.Plan) { $table.Plan } else { "" }) `
                 -SkipConfirm
 
             $results += $result

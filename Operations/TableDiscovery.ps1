@@ -262,7 +262,7 @@ function Select-Tables {
         Write-Host "Cyan" -ForegroundColor Cyan -NoNewline
         Write-Host " = custom log table (_CL suffix)  " -ForegroundColor Gray -NoNewline
         Write-Host "Magenta" -ForegroundColor Magenta -NoNewline
-        Write-Host " = Auxiliary/DataLake plan (requires ARM endpoint)" -ForegroundColor Gray
+        Write-Host " = Auxiliary/DataLake plan (not supported — will be skipped)" -ForegroundColor Gray
         Write-Host ""
 
         if ($AllowMultiple) {
@@ -359,14 +359,16 @@ function Select-Tables {
             Write-Host "    - $($t.Name)$indicator" -ForegroundColor $nameColor
         }
 
-        # Warn about Auxiliary/DataLake tables
+        # Warn about Auxiliary/DataLake tables — these will be skipped during export
         $auxTables = $selected | Where-Object { $_.Plan -imatch '^(Auxiliary|DataLake)$' }
         if ($auxTables.Count -gt 0) {
             Write-Host ""
-            Write-ColorOutput "  [NOTE] $($auxTables.Count) Auxiliary/DataLake table(s) selected." "Yellow"
-            Write-ColorOutput "         These tables will use Azure Search Jobs to materialize data before export." "Gray"
-            Write-ColorOutput "         This process takes longer (minutes to hours) depending on data volume." "Gray"
-            Write-ColorOutput "         The temporary _SRCH table will be automatically cleaned up after export." "Gray"
+            Write-ColorOutput "  [WARN] $($auxTables.Count) Auxiliary/DataLake table(s) will be SKIPPED during export." "Red"
+            Write-ColorOutput "         Auxiliary tables cannot be queried via standard KQL or REST API." "Gray"
+            Write-ColorOutput "         Use Azure Portal > Log Analytics > Search Jobs to export these manually." "Gray"
+            foreach ($at in $auxTables) {
+                Write-ColorOutput "           - $($at.Name)" "Yellow"
+            }
         }
         Write-Host ""
 
