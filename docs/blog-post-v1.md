@@ -230,9 +230,19 @@ Test-BackupIntegrity -MetadataPath "C:\SentinelBackups\SecurityEvent\20260301_09
 
 ## Important: Auxiliary and DataLake Tier Tables
 
-This is a critical point to understand, and one that can cause confusion if overlooked.
+This is a critical point to understand, and one I want to be transparent about because we spent significant time trying to solve it.
 
-**SentinelLocalBackup cannot export tables on the Auxiliary (formerly DataLake) tier.** This is not a bug in the tool -- it is a platform limitation. Auxiliary tier tables use a different storage backend, and standard KQL queries and REST API calls against these tables return zero rows.
+**SentinelLocalBackup cannot export tables on the Auxiliary (formerly DataLake) tier.** This is not a bug in the tool -- it is a platform limitation that we were unable to work around despite multiple attempts.
+
+### What we tried
+
+Auxiliary tier tables use a different storage backend than Analytics tables. Standard KQL queries and REST API calls against these tables return zero rows -- the data is there, but the query layer cannot reach it through the normal endpoints.
+
+We attempted to solve this using **Azure Search Jobs**, which is the ARM API designed specifically for materializing Auxiliary data. The approach was sound on paper: issue a PUT request to create a Search Job, which creates a temporary `_SRCH` table on the Analytics tier, then export from that table using the same pipeline as any other table.
+
+In practice, the Search Job would start correctly, transition through `Updating` and `InProgress` states, and then after approximately 3-4 minutes the `_SRCH` table would consistently vanish with a 404 ResourceNotFound error. We added retry logic, async operation header polling, detailed error body extraction, and multiple fallback strategies. None of them resolved the issue. The table simply disappeared every time.
+
+After multiple debugging iterations we made the decision to remove the Search Job workflow entirely rather than ship unreliable code. The tool now cleanly detects and skips Auxiliary tables instead.
 
 ### What the tool does
 
@@ -250,6 +260,8 @@ If you include Auxiliary tables in your selection, they are automatically filter
 
 Azure recently introduced a **table tier switching** feature that allows users to change a table's plan from Analytics to Auxiliary (or vice versa). This is useful for cost optimization, but it has a side effect: tables that were originally on the Analytics tier and have been switched to Auxiliary will also no longer be queryable through standard KQL or the REST API. They behave identically to natively Auxiliary tables. SentinelLocalBackup will detect and skip these switched tables in the same way.
 
+If you have recently switched a table from Analytics to Auxiliary and are wondering why the tool skips it -- this is the reason. The data is still in your workspace, but it is only accessible through Search Jobs.
+
 ### How to export Auxiliary tables manually
 
 For tables on the Auxiliary tier, use the **Search Jobs** feature in the Azure Portal:
@@ -260,7 +272,7 @@ For tables on the Auxiliary tier, use the **Search Jobs** feature in the Azure P
 4. When the job completes, the results are placed into a temporary searchable table
 5. Export the results from there, or use SentinelLocalBackup to export the Search Job results table (which is on the Analytics tier)
 
-This is the currently supported path for getting Auxiliary tier data out of Log Analytics.
+This is the currently supported path for getting Auxiliary tier data out of Log Analytics. If the Search Jobs API becomes more reliable for programmatic use in the future, we may revisit automated Auxiliary table support.
 
 ---
 

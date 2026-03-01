@@ -14,7 +14,7 @@ What it does:
 - **UTF-8 BOM encoding** with sep=, hint -- opens correctly in German-locale Excel, no import wizard
 - **Smart table discovery** -- detects table plan tiers and color-codes the selection UI
 
-**Important note on Auxiliary tables**: Tables on the Auxiliary (DataLake) tier cannot be exported via standard KQL or REST API -- this is a platform limitation. The tool detects these tables, warns you, and skips them automatically. For Auxiliary tier data, use Azure Portal Search Jobs.
+**A note on Auxiliary/DataLake tables**: We tried hard to make these work -- including building a full Search Job integration via the ARM API. After multiple attempts, the _SRCH tables kept vanishing mid-job with 404 errors. This is a platform limitation we could not work around. The tool now detects Auxiliary tables, warns you, and skips them cleanly. For Auxiliary tier data, use Azure Portal Search Jobs manually.
 
 I wrote a detailed blog post covering the architecture, batching strategy, resume capability, and how to set up automated daily backups:
 
