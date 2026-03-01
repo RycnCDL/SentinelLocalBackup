@@ -43,7 +43,6 @@ function Start-SentinelBackup {
     # ── Step 0: Banner ──────────────────────────────────────────────────────
     if (-not $SkipBanner) {
         Write-Banner
-        Write-Host "  Sentinel Local Backup v1.0" -ForegroundColor Cyan
         Write-Host "  Export Log Analytics tables to local CSV files" -ForegroundColor Gray
         Write-Host ""
         Write-Host "  Press any key to start..." -ForegroundColor DarkGray

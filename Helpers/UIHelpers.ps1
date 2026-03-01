@@ -1,9 +1,9 @@
 ﻿<#
 .SYNOPSIS
-    UI Helper Functions for Sentinel Manager
+    UI Helper Functions for Sentinel Local Backup
 .DESCRIPTION
     Provides reusable UI functions for consistent output formatting,
-    headers, and user interactions across all Sentinel Manager modules.
+    headers, and user interactions across Sentinel Local Backup.
 .VERSION
     3.0
 #>
@@ -36,7 +36,7 @@ function Write-ColorOutput {
 function Write-Banner {
     <#
     .SYNOPSIS
-        Displays ASCII art banner for Sentinel Manager
+        Displays ASCII art banner for Sentinel Local Backup
     #>
     Clear-Host
     Write-Host ""
@@ -47,8 +47,12 @@ function Write-Banner {
     Write-Host "  ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗" -ForegroundColor DarkCyan
     Write-Host "  ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝" -ForegroundColor DarkCyan
     Write-Host ""
+    Write-Host "                    L O C A L   B A C K U P" -ForegroundColor Yellow
+    Write-Host ""
     Write-Host "  ═══════════════════════════════════════════════════════════════" -ForegroundColor DarkGray
-    Write-Host "      Microsoft Sentinel Manager v3.5 - Management Toolset      " -ForegroundColor White
+    Write-Host "   v1.0" -ForegroundColor White -NoNewline
+    Write-Host "                                 Author: " -ForegroundColor DarkGray -NoNewline
+    Write-Host "Phillipe (RycnCDL)" -ForegroundColor Cyan
     Write-Host "  ═══════════════════════════════════════════════════════════════" -ForegroundColor DarkGray
     Write-Host ""
 }
