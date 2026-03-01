@@ -79,6 +79,20 @@ function Get-WorkspaceTables {
         }
 
         Write-ColorOutput "  Found $($tables.Count) tables via REST API" "Gray"
+
+        # Show plan tier breakdown to help identify Auxiliary tables (non-fatal)
+        try {
+            $planGroups = $tables | Group-Object -Property Plan -NoElement | Sort-Object Count -Descending
+            foreach ($pg in $planGroups) {
+                $planName = "$($pg.Name)"
+                if ([string]::IsNullOrWhiteSpace($planName)) { $planName = "(none)" }
+                $color = "Gray"
+                if ($planName -imatch '^(Auxiliary|DataLake)$') { $color = "Yellow" }
+                Write-ColorOutput "    Plan '${planName}': $($pg.Count) table(s)" $color
+            }
+        } catch {
+            Write-ColorOutput "    (Could not break down plan tiers: $_)" "Gray"
+        }
     }
     catch {
         Write-ColorOutput "  REST API unavailable, falling back to KQL..." "Yellow"
@@ -90,7 +104,7 @@ function Get-WorkspaceTables {
             $queryUri = "$($Config.ManagementApiUrl)/subscriptions/$($Session.SubscriptionId)" +
                         "/resourceGroups/$($Session.ResourceGroup)" +
                         "/providers/Microsoft.OperationalInsights/workspaces/$($Session.WorkspaceName)" +
-                        "/query?api-version=2020-08-01"
+                        "/query?api-version=2017-10-01"
 
             $body = @{ query = $kql } | ConvertTo-Json
 
@@ -230,7 +244,9 @@ function Select-Tables {
             if (-not $meta) { $meta = "-" }
             $metaPad = $meta.PadRight(23)
 
-            $color = if ($t.Kind -eq "CustomLog" -or $t.Name -match "_CL$") { "Cyan" } else { "White" }
+            $color = if ($t.Plan -imatch '^(Auxiliary|DataLake)$') { "Magenta" }
+                     elseif ($t.Kind -eq "CustomLog" -or $t.Name -match "_CL$") { "Cyan" }
+                     else { "White" }
 
             Write-Host "  │ " -ForegroundColor DarkGray -NoNewline
             Write-Host "$num" -ForegroundColor Yellow -NoNewline
@@ -244,7 +260,9 @@ function Select-Tables {
         Write-Host "  └────┴────────────────────────────────┴─────────────────────────┘" -ForegroundColor DarkGray
         Write-Host "  " -NoNewline
         Write-Host "Cyan" -ForegroundColor Cyan -NoNewline
-        Write-Host " = custom log table (_CL suffix)" -ForegroundColor Gray
+        Write-Host " = custom log table (_CL suffix)  " -ForegroundColor Gray -NoNewline
+        Write-Host "Magenta" -ForegroundColor Magenta -NoNewline
+        Write-Host " = Auxiliary/DataLake plan (not supported — will be skipped)" -ForegroundColor Gray
         Write-Host ""
 
         if ($AllowMultiple) {
@@ -335,7 +353,22 @@ function Select-Tables {
         Write-Host ""
         Write-Host "  Selected $($selected.Count) table(s):" -ForegroundColor Green
         foreach ($t in $selected) {
-            Write-Host "    - $($t.Name)" -ForegroundColor Cyan
+            $isAux     = $t.Plan -imatch '^(Auxiliary|DataLake)$'
+            $indicator = if ($isAux) { " ($($t.Plan))" } else { "" }
+            $nameColor = if ($isAux) { "Magenta" } else { "Cyan" }
+            Write-Host "    - $($t.Name)$indicator" -ForegroundColor $nameColor
+        }
+
+        # Warn about Auxiliary/DataLake tables — these will be skipped during export
+        $auxTables = $selected | Where-Object { $_.Plan -imatch '^(Auxiliary|DataLake)$' }
+        if ($auxTables.Count -gt 0) {
+            Write-Host ""
+            Write-ColorOutput "  [WARN] $($auxTables.Count) Auxiliary/DataLake table(s) will be SKIPPED during export." "Red"
+            Write-ColorOutput "         Auxiliary tables cannot be queried via standard KQL or REST API." "Gray"
+            Write-ColorOutput "         Use Azure Portal > Log Analytics > Search Jobs to export these manually." "Gray"
+            foreach ($at in $auxTables) {
+                Write-ColorOutput "           - $($at.Name)" "Yellow"
+            }
         }
         Write-Host ""
 
